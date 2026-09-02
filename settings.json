@@ -1,0 +1,13 @@
+{
+  "characters": {
+    "I": true,
+    "O": true,
+    "T": true,
+    "S": true,
+    "Z": true,
+    "J": true,
+    "L": true
+  },
+  "phobos": true,
+  "start_speed": 1
+}
