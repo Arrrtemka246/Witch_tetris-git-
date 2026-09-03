@@ -1,9 +1,7 @@
-W.I.T.C.H. Tetris — Pygame v6.21
+W.I.T.C.H. Tetris — Pygame v6.36.1
 
-macOS launch:
-  cd ~/Documents/Games/Witch_tetris
-  source .venv/bin/activate
-  python main.py
+1. Установите Python 3.11+.
+2. Выполните: python3 -m pip install -r requirements.txt
+3. Запустите: python3 main.py
 
-This build contains the v6.21 story/route/settings/Phobos-room changes.
-Mini-games are NOT included yet; they are planned for the next build.
+Все 11 мини-игр включены. Подробности и управление находятся в README.md.
