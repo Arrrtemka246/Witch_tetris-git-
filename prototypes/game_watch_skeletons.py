@@ -13,62 +13,60 @@ import random
 
 
 @dataclass
-class BlunkTreasureDiveState:
-    """Move Blunk between Cedric's boat and treasure under the tentacles."""
+class BlunkTreasureEscapeState:
+    """Steal treasure and escape the pursuing serpent form of Cedric."""
 
-    seed: int = 0
     path_length: int = 5
     position: int = 0
+    cedric_position: int = 6
     carried: int = 0
     banked: int = 0
     lives: int = 3
     tick_count: int = 0
-    strike_position: int | None = None
-    strike_frames: int = 0
+    safe_ticks: int = 60
     status: str = "playing"
-
-    def __post_init__(self) -> None:
-        self._rng = random.Random(self.seed)
 
     @property
     def level(self) -> int:
-        return 1 + self.banked // 8
+        return 1 + self.banked // 5
 
     def move(self, direction: int) -> bool:
         if self.status != "playing" or direction not in (-1, 1):
             return False
+        old = self.position
         self.position = max(0, min(self.path_length, self.position + direction))
-        if self.position == self.path_length and direction > 0:
-            self.carried += 1
-        if self.position == 0 and self.carried:
+        if self.position == self.path_length and old != self.path_length:
+            self.carried = 1
+        if self.position == 0 and old != 0 and self.carried:
             self.banked += self.carried
             self.carried = 0
-        self._check_strike()
+            self.cedric_position = self.path_length + 1
+        self._check_catch()
         return True
 
     def tick(self) -> None:
         if self.status != "playing":
             return
         self.tick_count += 1
-        if self.strike_frames:
-            self.strike_frames -= 1
-            self._check_strike()
-            if not self.strike_frames:
-                self.strike_position = None
-        interval = max(18, 64 - self.level * 3)
-        if self.tick_count % interval == 0 and self.strike_position is None:
-            self.strike_position = self._rng.randint(1, self.path_length)
-            self.strike_frames = max(4, 12 - self.level // 2)
+        self.safe_ticks = max(0, self.safe_ticks - 1)
+        interval = max(14, 54 - self.level * 4)
+        if self.tick_count % interval == 0:
+            if self.cedric_position > self.position:
+                self.cedric_position -= 1
+            elif self.cedric_position < self.position:
+                self.cedric_position += 1
+        self._check_catch()
 
-    def _check_strike(self) -> None:
-        if self.strike_frames and self.position == self.strike_position:
-            self.lives -= 1
-            self.carried = 0
-            self.position = 0
-            self.strike_frames = 0
-            self.strike_position = None
-            if self.lives <= 0:
-                self.status = "lost"
+    def _check_catch(self) -> None:
+        if self.safe_ticks or self.position != self.cedric_position:
+            return
+        self.lives -= 1
+        self.carried = 0
+        self.position = 0
+        self.cedric_position = self.path_length + 1
+        self.safe_ticks = 60
+        if self.lives <= 0:
+            self.status = "lost"
 
 
 @dataclass
@@ -215,7 +213,7 @@ class IrmaOilPanicState:
 
 
 GAME_WATCH_PROTOTYPES = (
-    BlunkTreasureDiveState,
+    BlunkTreasureEscapeState,
     FallingRescueState,
     CorneliaManholeState,
     IrmaOilPanicState,

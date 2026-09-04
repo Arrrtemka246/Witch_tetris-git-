@@ -21,7 +21,7 @@ from prototypes.future_minigames import (  # noqa: E402
     rotate_connectors,
 )
 from prototypes.game_watch_skeletons import (  # noqa: E402
-    BlunkTreasureDiveState,
+    BlunkTreasureEscapeState,
     CorneliaManholeState,
     FallingRescueState,
     IrmaOilPanicState,
@@ -146,7 +146,7 @@ class DialogueCascadeTests(unittest.TestCase):
 
 class GameWatchSkeletonTests(unittest.TestCase):
     def test_blunk_can_bank_treasure_without_victory_state(self):
-        state = BlunkTreasureDiveState()
+        state = BlunkTreasureEscapeState()
         for _ in range(state.path_length):
             state.move(1)
         for _ in range(state.path_length):
