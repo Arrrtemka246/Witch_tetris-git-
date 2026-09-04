@@ -116,13 +116,60 @@ class PygameSmokeTests(unittest.TestCase):
         self.assertEqual(self.game.mg_objects[0][2], 1)
         self.assertFalse(self.game.mg_over)
 
+    def test_cornelia_garden_requires_matching_colour_and_multiple_hits(self):
+        self.game.start_minigame("CORNELIA EARTH GARDEN")
+        self.game.mg_player = [500.0, 700.0]
+        vine = [500.0, 680.0, "vine", 1, 2, 2]
+        self.game.mg_objects = [vine]
+        before = self.game.mg_corruption
+        self.game.handle_minigame_key(pygame.K_SPACE)
+        self.assertGreater(self.game.mg_corruption, before)
+        self.assertEqual(vine[4], 2)
+        self.assertLess(vine[1], 680.0)
+
+        self.game.mg_garden_pulse = 0
+        self.game.handle_minigame_key(pygame.K_2)
+        self.game.handle_minigame_key(pygame.K_SPACE)
+        self.assertEqual(vine[4], 1)
+        self.game.mg_garden_pulse = 0
+        self.game.handle_minigame_key(pygame.K_SPACE)
+        self.assertNotIn(vine, self.game.mg_objects)
+        self.assertGreaterEqual(self.game.mg_score, 12)
+
+    def test_phobos_defeat_enters_room_and_disables_secret_codes(self):
+        self.game.start_new_game()
+        self.game.phobos_route = True
+        self.game.story_winner = "phobos"
+        self.game.record_saved = True
+        self.game.game_over = True
+        self.game.secret_buffer = "matri"
+        self.game.physical_secret_buffer = "por"
+        self.game.update()
+        self.assertEqual(self.game.story_overlay, 300)
+        self.assertFalse(self.game.game_over)
+        self.assertEqual(self.game.secret_buffer, "")
+        self.assertEqual(self.game.physical_secret_buffer, "")
+        self.game.feed_secret_char("matrix")
+        self.game.start_secret("porn_gallery")
+        self.assertEqual(self.game.matrix_timer, 0)
+        self.assertIsNone(self.game.secret_overlay)
+        self.game.start_new_game()
+
+    def test_phobos_room_has_six_clean_seated_poses(self):
+        self.assertEqual(len(self.game.phobos_room_emotions), 6)
+        for pose in self.game.phobos_room_emotions:
+            with self.subTest(size=pose.get_size()):
+                pixels = pygame.mask.from_surface(pose, 8).count()
+                self.assertGreater(pixels, pose.get_width() * pose.get_height() * 0.45)
+                self.assertLess(pixels, pose.get_width() * pose.get_height() * 0.90)
+        self.assertTrue((ROOT / "assets/cutscenes/phobos_room/background_v2.png").is_file())
+
     def test_room_variants_and_action_frames_draw(self):
         self.game.ensure_story100_assets()
         self.assertEqual(len(self.game.story200_action_frames), 14)
         self.game.phobos_room_stage = "room"
-        for layout in ("table", "podium"):
-            self.game.phobos_room_layout = layout
-            self.game.draw_phobos_room()
+        self.game.phobos_room_layout = "table"
+        self.game.draw_phobos_room()
 
 
 if __name__ == "__main__":

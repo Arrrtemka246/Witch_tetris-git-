@@ -1,8 +1,8 @@
-name: Validate v6.37.0
+name: Validate v6.37.1
 
 on:
   push:
-    branches: ["codex/v6.37.0"]
+    branches: ["codex/v6.37.1"]
   pull_request:
 
 jobs:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import sys
 import types
 import unittest
@@ -26,7 +27,7 @@ game = load_main_without_pygame()
 
 class ReleaseStaticTests(unittest.TestCase):
     def test_release_version_and_exact_tetromino_bases(self):
-        self.assertEqual(game.BUILD_VERSION, "6.37.0")
+        self.assertEqual(game.BUILD_VERSION, "6.37.1")
         self.assertEqual(game.BASE_SHAPES, {
             "I": [(0, 0), (0, 1), (0, 2), (0, 3)],
             "O": [(0, 0), (1, 0), (0, 1), (1, 1)],
@@ -81,6 +82,13 @@ class ReleaseStaticTests(unittest.TestCase):
         self.assertFalse(late.exists())
         self.assertTrue((ROOT / "assets/audio/music/phobos_route/Phobos_main_theme_3_phase.mp3").is_file())
         self.assertTrue((ROOT / "assets/audio/collection/witch_ending.mp3").is_file())
+
+    def test_only_the_unique_uploaded_arcade_track_was_added(self):
+        tracks = sorted((ROOT / "assets/audio/minigames").glob("arcade_*.mp3"))
+        self.assertEqual([path.name for path in tracks], [f"arcade_{i}.mp3" for i in range(1, 7)])
+        digest = hashlib.sha256((ROOT / "assets/audio/minigames/arcade_6.mp3").read_bytes()).hexdigest()
+        self.assertEqual(digest, "bc9150ccb26359b0a70fbe0968d4a869a5a90d1e4c5dda198a929ba0f1e8e114")
+        self.assertTrue((ROOT / "GAME_WATCH_MINIGAMES_GUIDE_RU.md").is_file())
 
 
 if __name__ == "__main__":

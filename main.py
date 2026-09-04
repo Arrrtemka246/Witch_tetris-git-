@@ -10,12 +10,12 @@ from pathlib import Path
 import pygame
 
 # ============================================================
-# W.I.T.C.H. Tetris — Pygame build v6.37.0
+# W.I.T.C.H. Tetris — Pygame build v6.37.1
 # Full-color 50x50 source cells, auto-fit, transparency, Hold, story checkpoints and secret-code system.
 # ============================================================
 
 FPS = 60
-BUILD_VERSION = "6.37.0"
+BUILD_VERSION = "6.37.1"
 BOARD_W = 10
 BOARD_H = 20
 CELL = 50
@@ -386,6 +386,60 @@ def make_border_black_transparent(surface: pygame.Surface, threshold: int = 30) 
         if x + 1 < w: stack.append((x + 1, y))
         if y > 0: stack.append((x, y - 1))
         if y + 1 < h: stack.append((x, y + 1))
+    return src
+
+
+def make_border_light_transparent(surface: pygame.Surface, threshold: int = 238) -> pygame.Surface:
+    """Remove only the near-white canvas connected to a sprite's border.
+
+    The six supplied seated Phobos poses use an opaque white sheet.  A border
+    flood fill preserves his pale hair and hands, while a narrow feather pass
+    removes the light fringe without touching the black costume.
+    """
+    src = surface.convert_alpha().copy()
+    width, height = src.get_size()
+    if width == 0 or height == 0:
+        return src
+
+    def is_background(x, y):
+        color = src.get_at((x, y))
+        return (
+            color.a > 0
+            and min(color.r, color.g, color.b) >= threshold
+            and max(color.r, color.g, color.b) - min(color.r, color.g, color.b) <= 18
+        )
+
+    stack = []
+    for x in range(width):
+        stack.extend(((x, 0), (x, height - 1)))
+    for y in range(height):
+        stack.extend(((0, y), (width - 1, y)))
+    background = set()
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in background or not (0 <= x < width and 0 <= y < height):
+            continue
+        if not is_background(x, y):
+            continue
+        background.add((x, y))
+        stack.extend(((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))
+    for x, y in background:
+        color = src.get_at((x, y))
+        src.set_at((x, y), (color.r, color.g, color.b, 0))
+
+    # Feather only pixels touching the removed exterior. Cream hair highlights
+    # are chromatic enough to remain fully opaque.
+    edge = set()
+    for x, y in background:
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if 0 <= nx < width and 0 <= ny < height and (nx, ny) not in background:
+                edge.add((nx, ny))
+    for x, y in edge:
+        color = src.get_at((x, y))
+        low, high = min(color.r, color.g, color.b), max(color.r, color.g, color.b)
+        if low >= 180 and high - low <= 30:
+            alpha = max(0, min(255, int((238 - low) * 255 / 58)))
+            src.set_at((x, y), (color.r, color.g, color.b, min(color.a, alpha)))
     return src
 
 
@@ -932,20 +986,43 @@ class Game:
             try: self.phobos_room_data = json.loads(rp.read_text(encoding="utf-8"))
             except Exception: pass
         self.phobos_room_bg = None
-        bgp = PHOBOS_ROOM_DIR / "background.png"
+        # v6.37.1 room composite: the supplied interior, fiery Meridian view
+        # and table are one stable background, so they cannot drift apart.
+        bgp = PHOBOS_ROOM_DIR / "background_v2.png"
+        if not bgp.exists():
+            bgp = PHOBOS_ROOM_DIR / "background.png"
         if bgp.exists():
             try: self.phobos_room_bg = pygame.image.load(str(bgp)).convert()
             except pygame.error: pass
         self.phobos_room_bg_frames=[]
-        for _fp in sorted((PHOBOS_ROOM_DIR / "bg_frames").glob("room_*.jpg")):
-            try: self.phobos_room_bg_frames.append(pygame.image.load(str(_fp)).convert())
-            except pygame.error: pass
-        # Room uses the consistent six-state seated sheet slices, never the old giant emotion portraits.
+        if bgp.name != "background_v2.png":
+            for _fp in sorted((PHOBOS_ROOM_DIR / "bg_frames").glob("room_*.jpg")):
+                try: self.phobos_room_bg_frames.append(pygame.image.load(str(_fp)).convert())
+                except pygame.error: pass
+        # Use the new six-pose seated sheet. Its opaque light canvas is removed
+        # from each 512x512 cell without black-keying the costume.
         self.phobos_room_emotions = []
-        state_files = sorted((PHOBOS_ROOM_DIR / "states").glob("state_*.png"))
-        for fp in state_files:
-            try: self.phobos_room_emotions.append(load_clean_alpha(fp))
-            except pygame.error: pass
+        seated_sheet_fp = PHOBOS_ROOM_DIR / "phobos_seated_poses.png"
+        if seated_sheet_fp.exists():
+            try:
+                seated_sheet = pygame.image.load(str(seated_sheet_fp)).convert_alpha()
+                cell_w, cell_h = seated_sheet.get_width() // 3, seated_sheet.get_height() // 2
+                for row in range(2):
+                    for column in range(3):
+                        frame = seated_sheet.subsurface(
+                            pygame.Rect(column * cell_w, row * cell_h, cell_w, cell_h)
+                        ).copy()
+                        frame = make_border_light_transparent(frame)
+                        bounds = frame.get_bounding_rect(min_alpha=8)
+                        if bounds.width and bounds.height:
+                            self.phobos_room_emotions.append(frame.subsurface(bounds).copy())
+            except pygame.error:
+                self.phobos_room_emotions = []
+        if not self.phobos_room_emotions:
+            state_files = sorted((PHOBOS_ROOM_DIR / "states").glob("state_*.png"))
+            for fp in state_files:
+                try: self.phobos_room_emotions.append(load_clean_alpha(fp))
+                except pygame.error: pass
         self.phobos_room_emotion = 0
         self.phobos_room_table = None
         table_fp = PHOBOS_ROOM_DIR / "table_foreground.png"
@@ -1037,7 +1114,7 @@ class Game:
         self.guardians_gone_this_run = False
         self.horror_piece_mode = False
         self.phobos_room = False
-        self.phobos_room_layout = random.choice(("table", "podium"))
+        self.phobos_room_layout = "table"
         self.phobos_room_stage = "idle"
         self.phobos_room_tick = 0
         self.phobos_room_last_voice = 0
@@ -1148,6 +1225,53 @@ class Game:
         for dx, dy in SHAPES[kind][rotation]:
             r = pygame.Rect(BOARD_X + (gx+dx)*CELL, BOARD_Y + (gy+dy)*CELL, CELL, CELL)
             self.draw_plain_cell(r, kind)
+
+    def enter_phobos_room(self, source="lines"):
+        """Enter the inescapable room and revoke the normal game's controls.
+
+        Besides the 300-line trigger, defeat after choosing Phobos now opens
+        the room immediately. Secret buffers and active Easter-egg overlays
+        are cleared so no old game code can execute inside Phobos's scene.
+        """
+        if self.game_over:
+            self.save_record()
+        self.game_over = False
+        self.game_over_voice_handled = False
+        self.story_seen.add(300)
+        self.story_overlay = 300
+        self.phobos_room = True
+        self.phobos_room_stage = "crash"
+        self.phobos_room_tick = 0
+        self.phobos_room_layout = "table"
+        self.phobos_room_last_voice = 0
+        self.phobos_room_last_key = None
+        self.phobos_room_caption = ""
+        self.phobos_room_chain = None
+        self.phobos_room_next_ms = pygame.time.get_ticks() + 3000
+        self.phobos_room_wait_until = 0
+        self.phobos_room_key_count = 0
+        self.phobos_room_key_suppressed = False
+        self.phobos_room_right_shift_seen = False
+        self.phobos_room_intro_pending = True
+        self.secret_buffer = ""
+        self.physical_secret_buffer = ""
+        self.secret_overlay = None
+        self.secret_timer = 0
+        self.secret_image = None
+        self.matrix_timer = 0
+        self.jetix_timer = 0
+        self.queued_voice = None
+        self.queued_voice_delay = 0
+        if self.voice_channel:
+            self.voice_channel.stop()
+        if self.menu_voice_channel:
+            self.menu_voice_channel.stop()
+        if self.vtd_channel:
+            self.vtd_channel.stop()
+        self.vtd_active = False
+        self.vtd_locked = False
+        self.music.special_lock = False
+        self.music.stop()
 
     def choose_phobos_room_chain(self):
         pool = self.phobos_room_data.get("random_chains", [])
@@ -1432,7 +1556,10 @@ class Game:
         self.maybe_character_voice(kind)
         if self.collides(self.current["x"], self.current["y"], self.current["rot"]):
             self.game_over = True
-            self.music.pause()
+            if self.phobos_route and self.story_winner == "phobos":
+                self.enter_phobos_room("phobos_defeat")
+            else:
+                self.music.pause()
         return True
 
     def shape(self, rot=None):
@@ -1507,7 +1634,10 @@ class Game:
             self.current = {"kind": swap, "rot": 0, "x": 3, "y": 0}
             if self.collides(self.current["x"], self.current["y"], 0):
                 self.game_over = True
-                self.music.pause()
+                if self.phobos_route and self.story_winner == "phobos":
+                    self.enter_phobos_room("phobos_defeat")
+                else:
+                    self.music.pause()
         self.hold_used = True
         self.hold_count_window += 1
         if self.hold_count_window >= 7 and random.random() < 0.35:
@@ -1558,22 +1688,8 @@ class Game:
             self.lines += cleared
             self.score += [0, 100, 300, 500, 800][min(cleared, 4)]
             if self.phobos_route and before < 300 <= self.lines:
-                self.story_overlay = 300
-                self.phobos_room = True
-                self.phobos_room_stage = "crash"
-                self.phobos_room_tick = 0
-                self.phobos_room_last_voice = 0
-                self.phobos_room_last_key = None
-                self.phobos_room_caption = ""
-                self.phobos_room_chain = None
-                self.phobos_room_next_ms = pygame.time.get_ticks() + 3000
-                self.phobos_room_key_count = 0
-                self.phobos_room_key_suppressed = False
-                self.queued_voice = None
-                self.queued_voice_delay = 0
-                if self.voice_channel: self.voice_channel.stop()
-                if self.menu_voice_channel: self.menu_voice_channel.stop()
-                self.music.stop()
+                self.enter_phobos_room("lines")
+                return
             if self.phobos_route:
                 # In Phobos's ending, figure dialogue is replaced by screams; Tetris uses his laugh only.
                 pass
@@ -1629,8 +1745,7 @@ class Game:
             self.winner_choice = 0
             self.music.pause()
         elif self.phobos_route and self.lines >= 300 and 300 not in self.story_seen:
-            self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0
-            self.phobos_room_layout=random.choice(("table","podium")); self.music.pause()
+            self.enter_phobos_room("lines")
         elif self.phase_index() != old_phase:
             self.music.set_phase(self.phase_index(), force=True)
         self.last_clear_kind = None
@@ -1793,6 +1908,8 @@ class Game:
         return [p for p in PORN_DIR.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGES]
 
     def start_secret(self, action):
+        if self.story_overlay == 300 or self.phobos_room:
+            return
         if self.secret_cooldown > 0:
             return
         if self.story200_choice_active():
@@ -1894,6 +2011,8 @@ class Game:
         handled separately through SDL scancodes, so entering a code cannot
         leave WASD/W/X/Z/C in a broken partial-prefix state.
         """
+        if self.story_overlay == 300 or self.phobos_room:
+            return
         if not ch or not ch.isprintable() or ch.isspace():
             return
         for char in ch.lower():
@@ -1912,6 +2031,8 @@ class Game:
         This makes MATRIX/JETIX/PORN/VTD work even while macOS is set to Russian.
         Russian textual aliases still work through event.unicode in parallel.
         """
+        if self.story_overlay == 300 or self.phobos_room:
+            return
         ch = PHYSICAL_LETTERS.get(scancode)
         if not ch:
             return
@@ -1943,8 +2064,7 @@ class Game:
             self.winner_choice = 0
             self.music.pause()
         elif self.phobos_route and self.lines >= 300 and 300 not in self.story_seen:
-            self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0
-            self.phobos_room_layout=random.choice(("table","podium")); self.music.pause()
+            self.enter_phobos_room("developer_lines")
         elif self.phase_index() != old_phase:
             self.music.set_phase(self.phase_index(), force=True)
 
@@ -2373,6 +2493,13 @@ class Game:
                     self.advance_intro()
             return
 
+        # The Phobos room is outside the normal game. Handle its local key
+        # reactions before the global secret-code buffers, so MATRIX, PORN,
+        # JETIX, VTD and their Russian aliases cannot activate here.
+        if self.story_overlay == 300:
+            self.react_phobos_room_key(key, unicode_char, mod, scancode)
+            return
+
         # v6.19: secret words are global. They are fed BEFORE menu/story handlers,
         # therefore they work in the main menu and on "КТО ПОБЕДИТ?" as intended.
         if unicode_char and unicode_char.isalpha():
@@ -2447,11 +2574,6 @@ class Game:
                         self.story200_stage = "choice"; self.story200_tick = 0
                 elif key in (pygame.K_SPACE, pygame.K_RETURN):
                     self.continue_after_story200()
-                return
-            if self.story_overlay == 300:
-                # Deliberately trapped fourth-wall room: no gameplay/menu key exits it.
-                # Only the OS window close event can end the application.
-                self.react_phobos_room_key(key, unicode_char, mod, scancode)
                 return
             if key == pygame.K_SPACE:
                 self.story_overlay = None
@@ -2619,6 +2741,11 @@ class Game:
             self.vtd_active = False
             self.vtd_intro_timer = 0
             self.music.leave_special(restart=True)
+        # Choosing Phobos makes defeat part of his ending: there is no normal
+        # retry menu. The loss tears open the same fourth-wall room at once.
+        if self.game_over and self.phobos_route and self.story_winner == "phobos":
+            self.enter_phobos_room("phobos_defeat")
+            return
         if self.game_over:
             self.save_record()
             self.handle_game_over_voice()
@@ -2692,12 +2819,7 @@ class Game:
         # Robust 300-line trigger: entering or already being beyond 300 on the Phobos route
         # must open the fourth-wall room exactly once, including developer line jumps.
         if self.phobos_route and self.lines >= 300 and 300 not in self.story_seen:
-            self.story_seen.add(300)
-            self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0
-            self.phobos_room_layout=random.choice(("table","podium"))
-            self.phobos_room_chain=None; self.phobos_room_next_ms=pygame.time.get_ticks()+3000
-            self.phobos_room_key_count=0; self.phobos_room_key_suppressed=False
-            self.music.pause()
+            self.enter_phobos_room("lines")
             return
         if self.paused or self.game_over or self.story_overlay is not None or self.secret_overlay == "porn_gallery":
             return
@@ -2967,12 +3089,13 @@ class Game:
                 self.draw_wrapped_center("СВЯЗИ ЗАКЛИНАНИЯ ОБОРВАНЫ.",500,760,self.font,(250,220,255))
             return
         if self.story200_stage == "cinematic_phobos":
-            frames=getattr(self,"story200_action_frames",[])
-            if frames:
-                frame=frames[min(len(frames)-1,self.story200_tick//7)]
-                self.draw_story100_sprite(frame,(WINDOW_W//2,430),760,3)
-            elif self.story100_assets.get("phobos_action"):
-                self.draw_story100_sprite(self.story100_assets["phobos_action"],(WINDOW_W//2,430),760,3)
+            # The old 14-frame export had destructively transparent black
+            # costume pixels. Use the fully reconstructed RGB pose and animate
+            # it with a restrained pulse/jitter instead of showing holes.
+            source = self.story100_assets.get("phobos_action") or self.phobos_resistance_body
+            if source:
+                pulse = int(742 + 18 * math.sin(self.story200_tick / 7.0))
+                self.draw_story100_sprite(source,(WINDOW_W//2,430),pulse,3)
             self.draw_wrapped_center("НЕТ... ВЫ НЕ МОЖЕТЕ ОСВОБОДИТЬСЯ!",840,780,self.font,(255,185,210))
             if self.story200_tick%17<5:
                 flash=pygame.Surface((WINDOW_W,WINDOW_H),pygame.SRCALPHA); flash.fill((210,150,255,75)); self.canvas.blit(flash,(0,0))
@@ -3090,27 +3213,16 @@ class Game:
             room_render=scaled.subsurface(crop).copy(); self.canvas.blit(room_render,(0,0))
         else:
             room_render=None; self.canvas.fill((12,4,8))
-        layout=getattr(self,"phobos_room_layout","table")
-        if layout=="podium":
-            # Remove the built-in table so table and podium never overlap.
-            if room_render:
-                floor=room_render.subsurface(pygame.Rect(0,760,min(180,WINDOW_W),WINDOW_H-760)).copy()
-                floor=pygame.transform.smoothscale(floor,(WINDOW_W,WINDOW_H-760)); self.canvas.blit(floor,(0,760))
-            else:
-                pygame.draw.rect(self.canvas,(35,16,17),(0,760,WINDOW_W,WINDOW_H-760))
         shade=pygame.Surface((WINDOW_W,WINDOW_H),pygame.SRCALPHA); shade.fill((0,0,0,35)); self.canvas.blit(shade,(0,0))
         if self.phobos_room_emotions:
             src=self.phobos_room_emotions[self.phobos_room_emotion % len(self.phobos_room_emotions)]
-            h=620 if layout=="podium" else 565; w=max(1,int(src.get_width()*h/src.get_height())); img=pygame.transform.smoothscale(src,(w,h))
-            self.canvas.blit(img,img.get_rect(midbottom=(WINDOW_W//2,925 if layout=="podium" else 950)))
-        if layout=="table" and room_render:
-            # The table belongs to the background. Repaint its foreground over
-            # Phobos so he is visibly seated behind it rather than hidden inside it.
-            self.canvas.blit(room_render,(0,830),pygame.Rect(0,830,WINDOW_W,WINDOW_H-830))
-        # The alternative layout uses the supplied gothic podium and no table.
-        if layout=="podium" and self.phobos_room_table:
-            src=self.phobos_room_table; th=720; tw=max(1,int(src.get_width()*th/src.get_height())); table=pygame.transform.smoothscale(src,(tw,th))
-            self.canvas.blit(table,table.get_rect(midtop=(WINDOW_W//2,555)))
+            h=565; w=max(1,int(src.get_width()*h/src.get_height())); img=pygame.transform.smoothscale(src,(w,h))
+            self.canvas.blit(img,img.get_rect(midbottom=(WINDOW_W//2,900)))
+        if room_render:
+            # The table is baked into background_v2. Repaint it from its top
+            # edge over Phobos so every pose sits convincingly behind it.
+            table_top=700
+            self.canvas.blit(room_render,(0,table_top),pygame.Rect(0,table_top,WINDOW_W,WINDOW_H-table_top))
         text=self.current_phobos_room_text()
         if text:
             box=pygame.Surface((WINDOW_W-70,180),pygame.SRCALPHA); box.fill((5,2,9,220)); pygame.draw.rect(box,(105,45,125,255),box.get_rect(),3)
@@ -3980,7 +4092,7 @@ class Game:
     def collection_current_items(self):
         if self.collection_page == "CUTSCENES": return ["INTRO / OPENING", "100 LINES — RESISTANCE", "200 LINES — CINEMATIC", "PHOBOS ROOM", "BACK"]
         if self.collection_page == "MINIGAMES": return self.minigame_names + ["BACK"]
-        if self.collection_page == "AUDIO": return ["INTRO MUSIC", "PHOBOS 0–99 — ARROGANT PRINCE", "PHOBOS ROOM — DARK THEME", "PHOBOS 200+ — MAIN THEME", "PHASE 2 — TRACK 1", "PHASE 2 — TRACK 2", "PHASE 2 — TRACK 3", "WITCH ENDING", "MINIGAMES MUSIC 1", "MINIGAMES MUSIC 2", "VTD — TRACK 1", "VTD — TRACK 2", "STOP", "BACK"]
+        if self.collection_page == "AUDIO": return ["INTRO MUSIC", "PHOBOS 0–99 — ARROGANT PRINCE", "PHOBOS ROOM — DARK THEME", "PHOBOS 200+ — MAIN THEME", "PHASE 2 — TRACK 1", "PHASE 2 — TRACK 2", "PHASE 2 — TRACK 3", "WITCH ENDING", "MINIGAMES MUSIC 1", "MINIGAMES MUSIC 2", "MINIGAMES — FOR ARCADE", "VTD — TRACK 1", "VTD — TRACK 2", "STOP", "BACK"]
         if self.collection_page == "ART & SPRITES": return ["ACTION POSES", "HORROR TETROMINOES", "PHOBOS ROOM STATES", "MERIDIAN WINDOWS", "BACK"]
         if self.collection_page == "DEVELOPMENT ARCHIVE": return ["FAILED / UNUSED ART", "SCREENSHOTS", "FACTS & NOTES", "BACK"]
         if self.collection_page == "GALLERY": return [fp.name for fp in self.collection_gallery_files] + ["BACK"]
@@ -4011,7 +4123,7 @@ class Game:
             elif item.startswith("200"):
                 self.start_new_game(); self.collection_cutscene=True; self.lines=200; self.story_seen.add(200); self.story_overlay=200; self.story200_stage="cinematic_reverse"; self.story200_tick=0; self.winner_choice=0; self.music.pause()
             elif item.startswith("PHOBOS ROOM"):
-                self.start_new_game(); self.collection_cutscene=True; self.phobos_route=True; self.lines=300; self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0; self.phobos_room_layout=random.choice(("table","podium")); self.music.pause()
+                self.start_new_game(); self.collection_cutscene=True; self.phobos_route=True; self.story_winner="phobos"; self.lines=300; self.enter_phobos_room("collection")
             return
         if self.collection_page=="AUDIO": self.play_collection_audio(item); return
         if self.collection_page=="ART & SPRITES": self.gallery_for(item); return
@@ -4033,7 +4145,7 @@ class Game:
         if item=="STOP":
             if pygame.mixer.get_init(): pygame.mixer.music.stop()
             self.collection_audio_item=None; return
-        mapping={"INTRO MUSIC":ASSET_DIR/"audio"/"collection"/"intro_music.mp3","MINIGAMES MUSIC 1":ASSET_DIR/"audio"/"collection"/"minigames_1.mp3","MINIGAMES MUSIC 2":ASSET_DIR/"audio"/"collection"/"minigames_2.mp3","PHASE 2 — TRACK 1":ASSET_DIR/"audio"/"collection"/"phase2_1.mp3","PHASE 2 — TRACK 2":ASSET_DIR/"audio"/"collection"/"phase2_2.mp3","PHASE 2 — TRACK 3":ASSET_DIR/"audio"/"collection"/"phase2_3.mp3","WITCH ENDING":ASSET_DIR/"audio"/"collection"/"witch_ending.mp3","PHOBOS 0–99 — ARROGANT PRINCE":ASSET_DIR/"audio"/"music"/"phase_0_99_phobos"/"Arrogant_Prince_of_the_Obsidian_Court.mp3","PHOBOS ROOM — DARK THEME":ASSET_DIR/"audio"/"music"/"phobos_room"/"PhobosthemeDark.mp3","PHOBOS 200+ — MAIN THEME":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_main_theme_3_phase.mp3","VTD — TRACK 1":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_01.mp3","VTD — TRACK 2":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_02.mp3"}
+        mapping={"INTRO MUSIC":ASSET_DIR/"audio"/"collection"/"intro_music.mp3","MINIGAMES MUSIC 1":ASSET_DIR/"audio"/"collection"/"minigames_1.mp3","MINIGAMES MUSIC 2":ASSET_DIR/"audio"/"collection"/"minigames_2.mp3","MINIGAMES — FOR ARCADE":ASSET_DIR/"audio"/"minigames"/"arcade_6.mp3","PHASE 2 — TRACK 1":ASSET_DIR/"audio"/"collection"/"phase2_1.mp3","PHASE 2 — TRACK 2":ASSET_DIR/"audio"/"collection"/"phase2_2.mp3","PHASE 2 — TRACK 3":ASSET_DIR/"audio"/"collection"/"phase2_3.mp3","WITCH ENDING":ASSET_DIR/"audio"/"collection"/"witch_ending.mp3","PHOBOS 0–99 — ARROGANT PRINCE":ASSET_DIR/"audio"/"music"/"phase_0_99_phobos"/"Arrogant_Prince_of_the_Obsidian_Court.mp3","PHOBOS ROOM — DARK THEME":ASSET_DIR/"audio"/"music"/"phobos_room"/"PhobosthemeDark.mp3","PHOBOS 200+ — MAIN THEME":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_main_theme_3_phase.mp3","VTD — TRACK 1":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_01.mp3","VTD — TRACK 2":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_02.mp3"}
         fp=mapping.get(item,Path("__missing__"))
         if not (fp.exists() and pygame.mixer.get_init()): return
         if self.collection_audio_item==item and pygame.mixer.music.get_busy():
@@ -4109,6 +4221,7 @@ class Game:
         self.mg_bubbles=[[340.0,300.0,3.1,-5.7,48],[660.0,240.0,-3.3,-5.1,48]]
         self.mg_whirl_angle=0.0; self.mg_whirl_mode="PULL"
         self.mg_corruption=0.0
+        self.mg_garden_color=0; self.mg_garden_pulse=0; self.mg_garden_mistakes=0; self.mg_garden_streak=0
         # Fixed-position state shared by the v6.37 Game & Watch-style games.
         self.mg_gw_position=0; self.mg_gw_cedric=6; self.mg_gw_carried=0; self.mg_gw_banked=0
         self.mg_gw_safe_until=FPS; self.mg_gw_cover=1; self.mg_gw_lane=1
@@ -4210,12 +4323,36 @@ class Game:
             elif key==pygame.K_RIGHT: self.mg_player[0]+=45
             elif key==pygame.K_UP: self.mg_player[1]-=38
             elif key==pygame.K_DOWN: self.mg_player[1]+=38
-            elif key==pygame.K_SPACE:
+            elif key in (pygame.K_1,pygame.K_KP1): self.mg_garden_color=0
+            elif key in (pygame.K_2,pygame.K_KP2): self.mg_garden_color=1
+            elif key in (pygame.K_3,pygame.K_KP3): self.mg_garden_color=2
+            elif key==pygame.K_SPACE and self.mg_garden_pulse<=0:
                 targets=[o for o in self.mg_objects if o[2]=="vine" and
-                         (o[0]-self.mg_player[0])**2+(o[1]-self.mg_player[1])**2 < 145**2]
+                         (o[0]-self.mg_player[0])**2+(o[1]-self.mg_player[1])**2 < 110**2]
                 if targets:
                     t=min(targets,key=lambda o:(o[0]-self.mg_player[0])**2+(o[1]-self.mg_player[1])**2)
-                    self.mg_objects.remove(t); self.mg_score+=5; self.mg_corruption=max(0,self.mg_corruption-2.5)
+                    vine_color=int(t[3]) if len(t)>3 else 0
+                    if vine_color != self.mg_garden_color:
+                        # A wrong resonance feeds the vine and pushes its head
+                        # closer to the flower line.
+                        self.mg_corruption=min(100.0,self.mg_corruption+10+self.mg_level)
+                        t[1]-=42+self.mg_level*2
+                        self.mg_garden_mistakes+=1; self.mg_garden_streak=0; self.mg_garden_pulse=14
+                    else:
+                        if len(t)<4: t.append(0)
+                        if len(t)<5: t.append(1)
+                        if len(t)<6: t.append(t[4])
+                        t[4]-=1; self.mg_score+=2; self.mg_garden_pulse=8
+                        self.mg_corruption=max(0.0,self.mg_corruption-0.8)
+                        if t[4]<=0:
+                            strength=max(1,int(t[5])); self.mg_objects.remove(t)
+                            self.mg_score+=6+strength*2; self.mg_garden_streak+=1
+                            self.mg_corruption=max(0.0,self.mg_corruption-3.5)
+                else:
+                    # Blindly spamming cleanse is possible, but it costs time
+                    # and lets the corruption creep upward.
+                    self.mg_corruption=min(100.0,self.mg_corruption+0.8)
+                    self.mg_garden_streak=0; self.mg_garden_pulse=5
         elif name=="BLUNK WASHING":
             if key==pygame.K_LEFT: self.mg_player[0]-=48
             elif key==pygame.K_RIGHT: self.mg_player[0]+=48
@@ -4438,18 +4575,29 @@ class Game:
                 self.mg_wave+=1; self.mg_score+=100
                 self.mg_invaders=taranee_invader_layout((arena.left,arena.top,arena.width,arena.height),self.mg_wave); self.mg_enemy_dir=1
         elif name=="CORNELIA EARTH GARDEN":
-            # v6.34: less passive/easy. Vines arrive sooner, grow faster and
-            # crowding itself feeds corruption, while still ramping gradually.
-            spawn=max(11,38-self.mg_level*2)
+            # v6.37.1: the garden is now a colour-matching pressure game, not
+            # a one-button mower. Vines gain armour, double-spawn and poison
+            # the meter continuously as the level rises.
+            if self.mg_garden_pulse>0: self.mg_garden_pulse-=1
+            spawn=max(16,50-self.mg_level*3)
             if self.mg_tick%spawn==0:
-                self.mg_objects.append([random.randint(arena.left+35,arena.right-35),float(arena.bottom-55),"vine"])
-                if self.mg_level>=4 and random.random()<min(.34,.08+self.mg_level*.025):
-                    self.mg_objects.append([random.randint(arena.left+35,arena.right-35),float(arena.bottom-55),"vine"])
+                def add_corrupted_vine():
+                    color=random.randrange(3)
+                    lane_centers=(arena.left+145,arena.centerx,arena.right-145)
+                    x=int(lane_centers[color]+random.randint(-92,92))
+                    base_strength=min(4,1+self.mg_level//3)
+                    strength=min(4,base_strength+(1 if random.random()<min(.55,.12+self.mg_level*.045) else 0))
+                    self.mg_objects.append([x,float(arena.bottom-55),"vine",color,strength,strength])
+                add_corrupted_vine()
+                if self.mg_level>=3 and random.random()<min(.62,.08+self.mg_level*.055):
+                    add_corrupted_vine()
             for o in self.mg_objects[:]:
-                if o[2]=="vine": o[1]-=.34+self.mg_level*.05
+                if o[2]=="vine": o[1]-=.52+self.mg_level*.08
                 if o[1]<arena.top+185:
                     self.minigame_game_over("A CORRUPTED VINE REACHED THE CRITICAL LINE"); return
-            self.mg_corruption+=max(0,len(self.mg_objects)-5)*.026
+            vine_count=sum(1 for o in self.mg_objects if o[2]=="vine")
+            armoured=sum(1 for o in self.mg_objects if o[2]=="vine" and len(o)>4 and o[4]>1)
+            self.mg_corruption+=.002+vine_count*.004+armoured*.003
             if self.mg_corruption>=100: self.minigame_game_over("THE GARDEN WAS CORRUPTED")
         elif name=="BLUNK WASHING":
             spawn=max(12,25-self.mg_level); speed=6+min(8,self.mg_level*.55)
@@ -4711,15 +4859,39 @@ class Game:
             critical=arena.top+185
             pygame.draw.line(self.canvas,(170,55,85),(arena.left,critical),(arena.right,critical),3)
             pygame.draw.rect(self.canvas,(55,85,48),(arena.x,760,arena.width,max(0,arena.bottom-760)))
+            garden_colors=((225,72,92),(80,155,245),(238,190,65))
+            garden_names=("CRIMSON","AZURE","GOLD")
+            flower_x=(arena.left+145,arena.centerx,arena.right-145)
+            for index,flower_center in enumerate(flower_x):
+                color=garden_colors[index]
+                pygame.draw.line(self.canvas,(75,135,70),(flower_center,critical+28),(flower_center,critical+72),5)
+                for angle in range(0,360,72):
+                    px=flower_center+int(math.cos(math.radians(angle))*13)
+                    py=critical+23+int(math.sin(math.radians(angle))*13)
+                    pygame.draw.circle(self.canvas,color,(px,py),9)
+                pygame.draw.circle(self.canvas,(235,215,115),(flower_center,critical+23),7)
             mg_sprite("cornelia",(int(self.mg_player[0]),int(self.mg_player[1])),130,165)
-            for x,y,k in self.mg_objects:
+            if self.mg_garden_pulse>0:
+                pygame.draw.circle(self.canvas,garden_colors[self.mg_garden_color],
+                                   (int(self.mg_player[0]),int(self.mg_player[1]-70)),112,4)
+            for vine in self.mg_objects:
+                x,y,k=vine[:3]
+                color_index=int(vine[3]) if len(vine)>3 else 0
+                hp=int(vine[4]) if len(vine)>4 else 1
+                max_hp=int(vine[5]) if len(vine)>5 else hp
+                vine_color=garden_colors[color_index%len(garden_colors)]
                 pygame.draw.line(self.canvas,(102,45,118),(int(x),arena.bottom-32),(int(x),int(y)),6)
                 for ty in range(int(y)+20,arena.bottom-40,42):
                     side=-1 if (ty//42)%2 else 1
                     pygame.draw.polygon(self.canvas,(86,33,98),[(int(x),ty),(int(x)+side*12,ty-7),(int(x),ty+5)])
-                pygame.draw.circle(self.canvas,(105,24,52),(int(x),int(y)),13)
-                pygame.draw.circle(self.canvas,(155,38,72),(int(x)-5,int(y)-3),7)
-            self.text(f"CORRUPTION {int(self.mg_corruption)}%   ARROWS + SPACE — CLEANSE",65,125,self.small)
+                pygame.draw.circle(self.canvas,(65,20,65),(int(x),int(y)),17)
+                pygame.draw.circle(self.canvas,vine_color,(int(x),int(y)),12)
+                for hit in range(max_hp):
+                    pip=(245,235,250) if hit<hp else (65,45,70)
+                    pygame.draw.rect(self.canvas,pip,(int(x)-max_hp*6+hit*12,int(y)-28,8,5))
+            selected=garden_names[self.mg_garden_color]
+            self.text(f"CORRUPTION {int(self.mg_corruption)}%   STREAK {self.mg_garden_streak}   RESONANCE {selected}",85,160,self.small)
+            self.text("ARROWS — MOVE   1/2/3 — COLOUR   SPACE — CLEANSE",85,184,self.small)
         elif n=="BLUNK WASHING":
             if "blunk_face" in self.mg_art:
                 src=self.mg_art["blunk_face"]; h=92; w=max(1,int(src.get_width()*h/src.get_height())); im=pygame.transform.smoothscale(src,(w,h)); self.canvas.blit(im,im.get_rect(center=(int(self.mg_player[0]),800)))
