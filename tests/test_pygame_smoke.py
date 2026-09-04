@@ -155,6 +155,73 @@ class PygameSmokeTests(unittest.TestCase):
         self.assertIsNone(self.game.secret_overlay)
         self.game.start_new_game()
 
+    def test_secret_codes_only_start_during_live_tetris(self):
+        self.game.start_new_game()
+        self.game.matrix_timer = 0
+        self.game.secret_cooldown = 0
+        for mode, overlay, paused, game_over in (
+            ("menu", None, False, False),
+            ("game", 100, False, False),
+            ("game", None, True, False),
+            ("game", None, False, True),
+            ("minigame", None, False, False),
+        ):
+            with self.subTest(mode=mode, overlay=overlay, paused=paused, game_over=game_over):
+                self.game.mode = mode
+                self.game.story_overlay = overlay
+                self.game.paused = paused
+                self.game.game_over = game_over
+                self.game.start_secret("matrix")
+                self.assertEqual(self.game.matrix_timer, 0)
+        self.game.mode = "game"
+        self.game.story_overlay = None
+        self.game.paused = False
+        self.game.game_over = False
+        self.game.secret_cooldown = 0
+        self.game.start_secret("matrix")
+        self.assertGreater(self.game.matrix_timer, 0)
+        self.game.toggle_pause()
+        self.assertEqual(self.game.matrix_timer, 0)
+        self.assertFalse(self.game.vtd_active)
+        self.game.toggle_pause()
+        self.game.start_new_game()
+
+    def test_classic_mode_uses_two_complete_bags(self):
+        old_mode = self.game.figure_fall_mode
+        old_enabled = self.game.character_enabled.copy()
+        try:
+            self.game.figure_fall_mode = "classic"
+            self.game.character_enabled = {kind: True for kind in old_enabled}
+            self.game.classic_piece_queue = []
+            self.game.classic_piece_signature = ()
+            self.game.spawn_history = []
+            self.assertEqual(self.game.figure_fall_label(), "КЛАССИК")
+            sequence = [self.game.random_piece() for _ in range(14)]
+            expected = set(old_enabled)
+            self.assertEqual(set(sequence[:7]), expected)
+            self.assertEqual(set(sequence[7:]), expected)
+            self.assertEqual(len(set(sequence[:7])), 7)
+            self.assertEqual(len(set(sequence[7:])), 7)
+            self.assertNotEqual(sequence[6], sequence[7])
+        finally:
+            self.game.figure_fall_mode = old_mode
+            self.game.character_enabled = old_enabled
+            self.game.classic_piece_queue = []
+            self.game.classic_piece_signature = ()
+
+    def test_menu_voice_and_room_layers(self):
+        self.assertEqual(self.game.menu_voice_paths, [])
+        self.assertEqual(self.game.pause_voice_paths, [])
+        self.assertIsNotNone(self.game.phobos_room_outside)
+        self.game.phobos_room_stage = "room"
+        self.game.phobos_room_tick = 0
+        self.game.draw_phobos_room()
+        first = pygame.image.tostring(self.game.canvas.subsurface((123, 155, 62, 111)), "RGB")
+        self.game.phobos_room_tick = 330
+        self.game.draw_phobos_room()
+        second = pygame.image.tostring(self.game.canvas.subsurface((123, 155, 62, 111)), "RGB")
+        self.assertNotEqual(first, second)
+
     def test_phobos_room_has_six_clean_seated_poses(self):
         self.assertEqual(len(self.game.phobos_room_emotions), 6)
         for pose in self.game.phobos_room_emotions:

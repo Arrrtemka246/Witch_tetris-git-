@@ -934,10 +934,11 @@ class Game:
         }
         self.menu_voice_channel = pygame.mixer.Channel(5) if pygame.mixer.get_init() else None
         self.sfx_channel = pygame.mixer.Channel(4) if pygame.mixer.get_init() else None
-        menu_dir = VOICE_DIR.parent / "menu"
-        self.menu_voice_paths = [menu_dir / "new_game.wav", menu_dir / "records.wav", None, None, menu_dir / "quit.wav"]
-        pause_dir = VOICE_DIR.parent / "pause_menu"
-        self.pause_voice_paths = [pause_dir / "continue.wav", pause_dir / "restart.wav", menu_dir / "quit.wav"]
+        # Menu navigation is deliberately silent. Phobos still speaks during
+        # actual gameplay/cutscenes, but no longer reads main- or pause-menu
+        # entries aloud.
+        self.menu_voice_paths = []
+        self.pause_voice_paths = []
         self.menu_voice_pending = None
         self.menu_voice_delay = 0
         self.pause_voice_pending = None
@@ -975,6 +976,9 @@ class Game:
         self.settings_page = "root"
         self.settings_message = ""
         self.start_speed = 1
+        self.figure_fall_mode = "phobos"
+        self.classic_piece_queue = []
+        self.classic_piece_signature = ()
         self.empty_roster_started_ms = None
         self.empty_roster_bored = False
         self.empty_roster_bored_at = None
@@ -994,6 +998,18 @@ class Game:
         if bgp.exists():
             try: self.phobos_room_bg = pygame.image.load(str(bgp)).convert()
             except pygame.error: pass
+        # Keep the supplied exterior as a separate runtime layer. This is
+        # intentionally independent from the interior/desk composite so a
+        # future 3DS port can move or replace the view without rebuilding the
+        # room art.
+        self.phobos_room_outside = None
+        outside_fp = ASSET_DIR / "reference" / "v6371_user_materials" / "meridian_fire_view_source.png"
+        if outside_fp.exists():
+            try:
+                outside = pygame.image.load(str(outside_fp)).convert()
+                self.phobos_room_outside = pygame.transform.smoothscale(outside, (520, 370))
+            except pygame.error:
+                self.phobos_room_outside = None
         self.phobos_room_bg_frames=[]
         if bgp.name != "background_v2.png":
             for _fp in sorted((PHOBOS_ROOM_DIR / "bg_frames").glob("room_*.jpg")):
@@ -1036,6 +1052,8 @@ class Game:
             if fp.exists():
                 try: self.mg_art[key] = load_clean_alpha(fp)
                 except pygame.error: pass
+        if "taranee" in self.mg_art:
+            self.mg_art["taranee_face"] = self.mg_art["taranee"].copy()
         # Runner/shooter/garden need the supplied full-body action poses rather
         # than the old small portrait crops.
         for key,fp in {
@@ -1157,6 +1175,8 @@ class Game:
         self.spawn_history = []
         self.last_seen_piece = {k: 0 for k in PIECES}
         self.piece_serial = 0
+        self.classic_piece_queue = []
+        self.classic_piece_signature = ()
         self.rotation_count = 0
         self.rotation_hint_block_pieces = 0
         self.spawn_voice_used = set()
@@ -1477,10 +1497,31 @@ class Game:
         self.queued_voice_delay = max(0, delay_frames)
 
     def random_piece(self):
-        """Controlled-chaos randomizer: drought protection, but up to 3 repeats allowed."""
+        """Select a piece using the configured Phobos or two-bag randomizer."""
         candidates = [k for k in PIECES if self.character_enabled.get(k, True)]
         if not candidates:
             return None
+        if self.figure_fall_mode == "classic":
+            signature = tuple(candidates)
+            if signature != self.classic_piece_signature:
+                self.classic_piece_signature = signature
+                self.classic_piece_queue = []
+            # Keep two complete shuffled bags queued. Each enabled shape is
+            # seen once per bag, and the boundary is swapped when it would
+            # repeat the last shape from the previous bag.
+            if not self.classic_piece_queue:
+                previous = self.spawn_history[-1] if self.spawn_history else None
+                for _ in range(2):
+                    bag = candidates[:]
+                    random.shuffle(bag)
+                    boundary = self.classic_piece_queue[-1] if self.classic_piece_queue else previous
+                    if boundary and len(bag) > 1 and bag[0] == boundary:
+                        swap_at = next(i for i, kind in enumerate(bag[1:], 1) if kind != bag[0])
+                        bag[0], bag[swap_at] = bag[swap_at], bag[0]
+                    self.classic_piece_queue.extend(bag)
+            return self.classic_piece_queue.pop(0)
+        # Default Phobos mode: controlled chaos with drought protection, but
+        # up to three deliberate repeats are still possible.
         if len(self.spawn_history) >= 3 and len(set(self.spawn_history[-3:])) == 1:
             if self.spawn_history[-1] in candidates and len(candidates) > 1:
                 candidates.remove(self.spawn_history[-1])
@@ -1907,13 +1948,21 @@ class Game:
             return []
         return [p for p in PORN_DIR.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGES]
 
+    def secret_gameplay_context(self):
+        """Secret words are accepted only during live, unobstructed Tetris."""
+        return (
+            self.mode == "game"
+            and self.story_overlay is None
+            and not self.phobos_room
+            and not self.paused
+            and not self.game_over
+            and not self.meta_video_name
+        )
+
     def start_secret(self, action):
-        if self.story_overlay == 300 or self.phobos_room:
+        if not self.secret_gameplay_context():
             return
         if self.secret_cooldown > 0:
-            return
-        if self.story200_choice_active():
-            self.start_story200_secret(action)
             return
         if self.voice_cooldown > 0: self.voice_cooldown -= 1
         self.secret_cooldown = 12
@@ -2004,6 +2053,23 @@ class Game:
             self.vtd_intro_timer = 0
             self.music.leave_special(restart=True)
 
+    def cancel_secret_effects(self, restart_music=False):
+        """Clear every code effect when live Tetris is no longer visible."""
+        self.secret_buffer = ""
+        self.physical_secret_buffer = ""
+        self.secret_overlay = None
+        self.secret_image = None
+        self.secret_timer = 0
+        self.matrix_timer = 0
+        self.jetix_timer = 0
+        self.vtd_intro_timer = 0
+        if self.vtd_channel:
+            self.vtd_channel.stop()
+        self.vtd_active = False
+        self.vtd_locked = False
+        if self.music.special_lock:
+            self.music.leave_special(restart=restart_music)
+
     def feed_secret_char(self, ch):
         """Feed layout-aware text into a rolling secret-code buffer.
 
@@ -2011,7 +2077,9 @@ class Game:
         handled separately through SDL scancodes, so entering a code cannot
         leave WASD/W/X/Z/C in a broken partial-prefix state.
         """
-        if self.story_overlay == 300 or self.phobos_room:
+        if not self.secret_gameplay_context():
+            self.secret_buffer = ""
+            self.physical_secret_buffer = ""
             return
         if not ch or not ch.isprintable() or ch.isspace():
             return
@@ -2031,7 +2099,9 @@ class Game:
         This makes MATRIX/JETIX/PORN/VTD work even while macOS is set to Russian.
         Russian textual aliases still work through event.unicode in parallel.
         """
-        if self.story_overlay == 300 or self.phobos_room:
+        if not self.secret_gameplay_context():
+            self.secret_buffer = ""
+            self.physical_secret_buffer = ""
             return
         ch = PHYSICAL_LETTERS.get(scancode)
         if not ch:
@@ -2071,22 +2141,12 @@ class Game:
     def toggle_pause(self):
         self.paused = not self.paused
         if self.paused:
+            self.cancel_secret_effects(restart_music=True)
             self.music.pause()
-            # Do NOT pronounce the default CONTINUE item merely because pause opened.
+            # Pause is a menu state: no Phobos labels or contextual remarks.
             self.pause_voice_pending = None
-            # Phobos may make one contextual pause remark; this is separate from menu-item speech.
-            available = [] if self.guardians_route else [p for p in self.pause_reaction_pool if str(p) not in self.pause_reaction_used]
-            if available and random.random() < 0.14 and not (self.voice_channel and self.voice_channel.get_busy()):
-                p = random.choice(available)
-                if self.play_external_voice(p, force=True):
-                    self.pause_reaction_used.add(str(p))
         else:
             self.pause_voice_pending = None
-            # "Пусть так. Поспеши" is a rare resume reaction.
-            hurry = None if self.guardians_route else self.voice_paths.get("hurry")
-            if hurry and hurry.exists() and "resume_hurry" not in self.pause_reaction_used and random.random() < 0.18:
-                if self.play_external_voice(hurry, force=True):
-                    self.pause_reaction_used.add("resume_hurry")
             if not self.vtd_active:
                 self.music.resume()
 
@@ -2146,12 +2206,14 @@ class Game:
             for k in PIECES: self.character_enabled[k]=bool(chars.get(k,True))
             self.phobos_enabled=bool(data.get("phobos",True))
             self.start_speed=max(1,min(5,int(data.get("start_speed",1))))
+            mode=str(data.get("figure_fall_mode","phobos")).lower()
+            self.figure_fall_mode=mode if mode in ("phobos","classic") else "phobos"
         except Exception:
             pass
 
     def save_settings(self):
         try:
-            SETTINGS_PATH.write_text(json.dumps({"characters":self.character_enabled,"phobos":self.phobos_enabled,"start_speed":self.start_speed},ensure_ascii=False,indent=2),encoding="utf-8")
+            SETTINGS_PATH.write_text(json.dumps({"characters":self.character_enabled,"phobos":self.phobos_enabled,"start_speed":self.start_speed,"figure_fall_mode":self.figure_fall_mode},ensure_ascii=False,indent=2),encoding="utf-8")
         except Exception as exc:
             print("[settings]",exc)
 
@@ -2159,7 +2221,10 @@ class Game:
         return ["GAME", "CHARACTERS", "BACK"]
 
     def settings_game_items(self):
-        return ["START SPEED", "FREE PLAY", "BACK"]
+        return ["START SPEED", "ПАДЕНИЕ ФИГУР", "FREE PLAY", "BACK"]
+
+    def figure_fall_label(self):
+        return "КЛАССИК" if self.figure_fall_mode == "classic" else "ФОБОС"
 
     def settings_character_items(self):
         return [(k,self.character_labels[k]) for k in ("I","J","L","T","O","S","Z")]+[("PHOBOS","PHOBOS"),("BACK","BACK") ]
@@ -2181,6 +2246,10 @@ class Game:
             if item == "START SPEED":
                 self.start_speed = 1 if self.start_speed >= 5 else self.start_speed + 1
                 self.save_settings(); self.settings_message=f"START SPEED: {self.start_speed}"
+            elif item == "ПАДЕНИЕ ФИГУР":
+                self.figure_fall_mode = "classic" if self.figure_fall_mode == "phobos" else "phobos"
+                self.classic_piece_queue = []; self.classic_piece_signature = ()
+                self.save_settings(); self.settings_message=f"ПАДЕНИЕ ФИГУР: {self.figure_fall_label()}"
             elif item == "FREE PLAY":
                 self.settings_message="ХА-ХА. СВОБОДА НЕДОСТУПНА."
             else:
@@ -2194,8 +2263,13 @@ class Game:
         self.save_settings()
 
     def settings_adjust(self, delta):
-        if self.settings_page == "game" and self.settings_items()[self.settings_index] == "START SPEED":
+        item = self.settings_items()[self.settings_index]
+        if self.settings_page == "game" and item == "START SPEED":
             self.start_speed=max(1,min(5,self.start_speed+delta)); self.save_settings(); self.settings_message=f"START SPEED: {self.start_speed}"
+        elif self.settings_page == "game" and item == "ПАДЕНИЕ ФИГУР":
+            self.figure_fall_mode = "classic" if self.figure_fall_mode == "phobos" else "phobos"
+            self.classic_piece_queue = []; self.classic_piece_signature = ()
+            self.save_settings(); self.settings_message=f"ПАДЕНИЕ ФИГУР: {self.figure_fall_label()}"
         else:
             self.settings_enter()
 
@@ -2215,7 +2289,7 @@ class Game:
         if self.settings_page == "root":
             sub="Основные параметры игры. Некоторые вещи спрятаны чуть глубже."
         elif self.settings_page == "game":
-            sub="START SPEED меняет начальную скорость падения. FREE PLAY пока закрыта."
+            sub="Скорость и порядок появления фигур. Режим ФОБОС используется по умолчанию."
         else:
             sub="Удалённый персонаж исчезает из фигур, голосов и сюжетных сцен."
         ss=self.small.render(sub,True,COLORS["text"]); self.canvas.blit(ss,ss.get_rect(center=(WINDOW_W//2,150)))
@@ -2235,6 +2309,7 @@ class Game:
             else:
                 text=item
                 if self.settings_page=="game" and item=="START SPEED": text=f"START SPEED   {self.start_speed}"
+                if self.settings_page=="game" and item=="ПАДЕНИЕ ФИГУР": text=f"ПАДЕНИЕ ФИГУР   {self.figure_fall_label()}"
                 if self.settings_page=="game" and item=="FREE PLAY": text="FREE PLAY   [LOCKED]"
                 tx=self.font.render(("▶ " if i==self.settings_index else "  ")+text,True,COLORS["text"]); self.canvas.blit(tx,tx.get_rect(center=r.center))
         if self.settings_message:
@@ -2469,6 +2544,9 @@ class Game:
     def handle_keydown(self, key, unicode_char="", mod=0, scancode=None):
         if scancode is not None:
             self.held_scancodes.add(scancode)
+        if not self.secret_gameplay_context():
+            self.secret_buffer = ""
+            self.physical_secret_buffer = ""
 
         if self.phobos_deleted_win:
             self.phobos_deleted_win=False; self.mode="menu"; self.music.set_phase(-1,force=True); return
@@ -2500,17 +2578,22 @@ class Game:
             self.react_phobos_room_key(key, unicode_char, mod, scancode)
             return
 
-        # v6.19: secret words are global. They are fed BEFORE menu/story handlers,
-        # therefore they work in the main menu and on "КТО ПОБЕДИТ?" as intended.
-        if unicode_char and unicode_char.isalpha():
+        # Secret words belong only to live Tetris. Menus, pause, Game Over,
+        # minigames and every cutscene clear partial input instead of carrying
+        # it into the next gameplay frame.
+        secret_input = self.secret_gameplay_context()
+        if not secret_input:
+            self.secret_buffer = ""
+            self.physical_secret_buffer = ""
+        if secret_input and unicode_char and unicode_char.isalpha():
             layout = "ru" if ("а" <= unicode_char.lower() <= "я" or unicode_char.lower() == "ё") else "latin"
             if self.last_layout and layout != self.last_layout and not self.layout_reaction_done and random.random() < 0.08:
                 if self.play_voice("layout"):
                     self.layout_reaction_done = True
             self.last_layout = layout
-        if scancode is not None:
+        if secret_input and scancode is not None:
             self.feed_physical_secret(scancode)
-        if unicode_char:
+        if secret_input and unicode_char:
             self.feed_secret_char(unicode_char)
 
         if self.secret_overlay == "porn_gallery":
@@ -2652,6 +2735,11 @@ class Game:
 
     def update(self):
         self.menu_tick += 1
+        if not self.secret_gameplay_context() and (
+            self.secret_overlay is not None or self.matrix_timer > 0
+            or self.jetix_timer > 0 or self.vtd_active
+        ):
+            self.cancel_secret_effects(restart_music=False)
         if self.mode == "minigame":
             self.update_minigame()
             return
@@ -2679,18 +2767,10 @@ class Game:
                 if self.intro_scene_tick > limit:
                     self.advance_intro()
             return
-        if self.mode == "menu" and self.menu_voice_pending is not None:
-            if self.menu_voice_delay > 0:
-                self.menu_voice_delay -= 1
-            else:
-                i = self.menu_voice_pending; self.menu_voice_pending = None
-                path = self.menu_voice_paths[i] if 0 <= i < len(self.menu_voice_paths) else None
-                if self.menu_voice_channel and path and path.exists():
-                    try:
-                        self.menu_voice_channel.stop(); snd = pygame.mixer.Sound(str(path)); snd.set_volume(0.95); self.menu_voice_channel.play(snd)
-                    except pygame.error: pass
+        # Main-menu navigation intentionally has no Phobos voice-over.
+        self.menu_voice_pending = None
         if self.mode != "game":
-            # Secret effects also live in the menu, so their timers/cooldowns must tick here.
+            # Effects cannot start or remain active outside live Tetris.
             if self.secret_cooldown > 0: self.secret_cooldown -= 1
             if self.secret_timer > 0:
                 self.secret_timer -= 1
@@ -2705,18 +2785,8 @@ class Game:
             if self.mode in ("menu","records","settings","collection") and not self.vtd_active and not self.collection_audio_item:
                 self.music.update()
             return
-        if self.mode == "game" and self.paused and self.pause_voice_pending is not None:
-            if self.pause_voice_delay > 0:
-                self.pause_voice_delay -= 1
-            else:
-                i = self.pause_voice_pending; self.pause_voice_pending = None
-                if (not self.guardians_route) and self.menu_voice_channel and 0 <= i < len(self.pause_voice_paths) and self.pause_voice_paths[i].exists():
-                    try:
-                        self.menu_voice_channel.stop()
-                        snd = pygame.mixer.Sound(str(self.pause_voice_paths[i])); snd.set_volume(0.95)
-                        self.menu_voice_channel.play(snd)
-                    except pygame.error:
-                        pass
+        # Pause-menu navigation is silent as well.
+        self.pause_voice_pending = None
         if self.voice_cooldown > 0: self.voice_cooldown -= 1
         if self.secret_cooldown > 0:
             self.secret_cooldown -= 1
@@ -3186,6 +3256,34 @@ class Game:
         for i,line in enumerate(lines[:5]):
             surf=font.render(line,True,color); self.canvas.blit(surf,surf.get_rect(center=(WINDOW_W//2,y+i*(font.get_height()+8))))
 
+    def draw_phobos_window_parallax(self):
+        """Move the separate Meridian layer a few pixels behind both windows."""
+        outside = self.phobos_room_outside
+        if outside is None:
+            return
+        tick = self.phobos_room_tick
+        drift_x = int(round(math.sin(tick / 210.0) * 6.0))
+        drift_y = int(round(math.sin(tick / 285.0) * 2.0))
+        # Pane rectangles follow background_v2 at the fixed 860x1060 canvas.
+        # Drawing only into the glass keeps the existing mullions and curtains
+        # intact while the exterior remains an independent portable layer.
+        windows = (
+            ((123, 155), 104, ((0, 0, 62, 111), (71, 0, 61, 111),
+                               (0, 122, 62, 225), (71, 122, 61, 225))),
+            ((590, 155), 270, ((0, 0, 72, 111), (82, 0, 71, 111),
+                               (0, 122, 72, 225), (82, 122, 71, 225))),
+        )
+        for (window_x, window_y), source_x, panes in windows:
+            for local_x, local_y, width, height in panes:
+                destination = (window_x + local_x, window_y + local_y)
+                source = pygame.Rect(
+                    source_x + local_x + drift_x,
+                    10 + local_y + drift_y,
+                    width,
+                    height,
+                )
+                self.canvas.blit(outside, destination, source)
+
     def draw_phobos_room(self):
         if self.phobos_room_stage == "crash":
             self.draw_background(1)
@@ -3211,6 +3309,7 @@ class Game:
             scaled=pygame.transform.smoothscale(room_source,(max(1,int(iw*scale)),max(1,int(ih*scale))))
             crop=pygame.Rect((scaled.get_width()-WINDOW_W)//2,(scaled.get_height()-WINDOW_H)//2,WINDOW_W,WINDOW_H)
             room_render=scaled.subsurface(crop).copy(); self.canvas.blit(room_render,(0,0))
+            self.draw_phobos_window_parallax()
         else:
             room_render=None; self.canvas.fill((12,4,8))
         shade=pygame.Surface((WINDOW_W,WINDOW_H),pygame.SRCALPHA); shade.fill((0,0,0,35)); self.canvas.blit(shade,(0,0))
@@ -3275,6 +3374,8 @@ class Game:
         self.canvas.blit(c, c.get_rect(center=(WINDOW_W//2, WINDOW_H//2+230)))
 
     def draw_secret_effects(self):
+        if not self.secret_gameplay_context():
+            return
         if self.matrix_timer > 0 or self.vtd_active:
             green = (40, 255, 90)
             # MATRIX is interface-only; VTD additionally recolors the whole gameplay render.
@@ -4909,7 +5010,10 @@ class Game:
             cx,cy=WINDOW_W//2,520; pygame.draw.circle(self.canvas,(80,150,220),(cx,cy),70,4); mg_sprite("irma_face",(cx,cy),62,70)
             ex=cx+math.cos(self.mg_whirl_angle)*155; ey=cy+math.sin(self.mg_whirl_angle)*155; pygame.draw.line(self.canvas,(160,225,255),(cx,cy),(int(ex),int(ey)),4)
             for rad,ang,k in self.mg_objects:
-                x=cx+math.cos(ang)*rad; y=cy+math.sin(ang)*rad; pygame.draw.circle(self.canvas,(230,80,100) if k=="enemy" else (230,205,95),(int(x),int(y)),12)
+                x=cx+math.cos(ang)*rad; y=cy+math.sin(ang)*rad
+                orb_color=(230,80,100) if k=="enemy" else (70,165,245)
+                pygame.draw.circle(self.canvas,orb_color,(int(x),int(y)),12)
+                if k!="enemy": pygame.draw.circle(self.canvas,(175,225,255),(int(x)-3,int(y)-3),4)
             self.text("LEFT/RIGHT — AIM WATER   SPACE — BLAST RED HAZARDS",65,125,self.small)
         elif n=="BLUNK TREASURE ESCAPE":
             xs=[130+i*105 for i in range(7)]; track_y=690
@@ -4935,15 +5039,20 @@ class Game:
         elif n=="CORNELIA STONE COVERS":
             xs=[155+i*180 for i in range(4)]; road_y=680
             pygame.draw.rect(self.canvas,(82,70,75),(arena.left+15,road_y-25,arena.width-30,125))
+            guardian_keys=("will_face","irma_face","taranee_face","haylin_face")
             for i,x in enumerate(xs):
-                pygame.draw.ellipse(self.canvas,(18,12,22),(x-48,road_y,96,46))
+                pygame.draw.circle(self.canvas,(35,25,42),(x,road_y+27),48)
+                pygame.draw.circle(self.canvas,(150,110,165),(x,road_y+27),49,3)
+                mg_sprite(guardian_keys[i],(x,road_y+24),78,82)
                 if i==self.mg_gw_cover:
-                    pygame.draw.ellipse(self.canvas,(133,114,105),(x-55,road_y-8,110,38))
-                    pygame.draw.ellipse(self.canvas,(205,180,145),(x-55,road_y-8,110,38),4)
-            for hole,remaining in self.mg_objects:
+                    shield=pygame.Rect(x-57,road_y-42,114,116)
+                    pygame.draw.arc(self.canvas,(205,180,145),shield,math.pi,2*math.pi,10)
+                    pygame.draw.ellipse(self.canvas,(133,114,105),(x-55,road_y+57,110,22))
+                    pygame.draw.ellipse(self.canvas,(205,180,145),(x-55,road_y+57,110,22),4)
+            for lane,remaining in self.mg_objects:
                 y=max(arena.top+90,road_y-80-int(remaining)*5)
-                pygame.draw.circle(self.canvas,(232,202,166),(xs[hole],y),20)
-                pygame.draw.line(self.canvas,(232,202,166),(xs[hole],y+20),(xs[hole],y+55),7)
+                pygame.draw.circle(self.canvas,(232,202,166),(xs[lane],y),20)
+                pygame.draw.line(self.canvas,(232,202,166),(xs[lane],y+20),(xs[lane],y+55),7)
             mg_sprite("cornelia",(WINDOW_W//2,390),165,225)
             self.text("LEFT/RIGHT — MOVE THE EARTH COVER",205,850,self.small)
         elif n=="IRMA DARK WATER PANIC":
@@ -5100,7 +5209,6 @@ class Game:
             self.draw_splash()
         elif self.mode == "menu":
             self.draw_menu()
-            self.draw_secret_effects()
         elif self.mode == "records":
             self.draw_records()
         elif self.mode == "settings":
@@ -5133,8 +5241,7 @@ class Game:
                 t=self.big.render("ВЫ ВЫИГРАЛИ",True,COLORS["accent"]); self.canvas.blit(t,t.get_rect(center=(WINDOW_W//2,450)))
                 st=self.font.render("ФОБОС УДАЛЁН",True,COLORS["text"]); self.canvas.blit(st,st.get_rect(center=(WINDOW_W//2,530)))
                 h=self.small.render("НАЖМИТЕ ЛЮБУЮ КЛАВИШУ",True,COLORS["text"]); self.canvas.blit(h,h.get_rect(center=(WINDOW_W//2,620)))
-            # Secret effects are top-most so codes typed on the 200-line choice screen
-            # are immediately visible instead of being hidden behind the cutscene overlay.
+            # Secret effects are top-most, but only during unobstructed Tetris.
             self.draw_secret_effects()
 
         target_w, target_h = self.window.get_size()
