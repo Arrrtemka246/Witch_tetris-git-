@@ -154,30 +154,43 @@ def bbox(shape):
 
 
 def build_will_maze():
-    """Return one connected 30x33 grid with a single central wrap tunnel."""
-    width, height, tunnel_y = 30, 33, 16
+    """Return an original Pac-Man-like maze with one central wrap tunnel.
+
+    Solid mirrored islands create readable lanes while leaving the whole map
+    connected.  This is intentionally not a copy of the arcade maze.
+    """
+    width, height, tunnel_y = 28, 31, 15
     walls = {(x, 0) for x in range(width)} | {(x, height - 1) for x in range(width)}
     walls |= {(0, y) for y in range(height)} | {(width - 1, y) for y in range(height)}
     walls -= {(0, tunnel_y), (width - 1, tunnel_y)}
-    for y in (4, 8, 12, 20, 24, 28):
-        for start, end in ((2, 8), (11, 18), (21, 27)):
-            for x in range(start, end + 1):
-                if x not in (3, 7, 14, 15, 22, 26):
-                    walls.add((x, y))
-    for x in (5, 10, 19, 24):
-        for y in range(2, height - 2):
-            if y not in (3, 7, 11, 15, 16, 17, 21, 25, 29):
+
+    def solid(left, top, right, bottom):
+        for y in range(top, bottom + 1):
+            for x in range(left, right + 1):
                 walls.add((x, y))
-    # Ghost house. Only the two central cells are doors.
-    for x in range(12, 18):
-        walls.add((x, 14)); walls.add((x, 19))
-    for y in range(14, 20):
-        walls.add((12, y)); walls.add((17, y))
-    walls -= {(14, 14), (15, 14), (14, 19), (15, 19)}
+
+    # Paired top/bottom islands give the board its maze rhythm without long
+    # fence lines that look like a spreadsheet.
+    top_islands = (
+        (2, 2, 6, 4), (9, 2, 11, 4), (16, 2, 18, 4), (21, 2, 25, 4),
+        (2, 7, 4, 9), (7, 7, 11, 9), (16, 7, 20, 9), (23, 7, 25, 9),
+        (2, 12, 6, 13), (8, 11, 10, 13), (17, 11, 19, 13), (21, 12, 25, 13),
+    )
+    for rect in top_islands:
+        solid(*rect)
+        left, top, right, bottom = rect
+        solid(left, height - 1 - bottom, right, height - 1 - top)
+
+    # Central ghost house. The two top cells form the only door.
+    for x in range(11, 17):
+        walls.add((x, 13)); walls.add((x, 18))
+    for y in range(13, 19):
+        walls.add((11, y)); walls.add((16, y))
+    walls -= {(13, 13), (14, 13)}
     return width, height, tunnel_y, walls
 
 
-def will_maze_step(cell, direction, walls, width=30, height=33, tunnel_y=16):
+def will_maze_step(cell, direction, walls, width=28, height=31, tunnel_y=15):
     x, y = cell; dx, dy = direction
     nx, ny = x + dx, y + dy
     if y == tunnel_y and dy == 0 and nx < 0:
@@ -392,7 +405,15 @@ def load_clean_alpha(path: Path, threshold: int = 30) -> pygame.Surface:
 
 def clean_alpha_surface(src: pygame.Surface, threshold: int = 30) -> pygame.Surface:
     """Surface variant used for in-memory sprite-sheet frames."""
-    src = make_border_black_transparent(src, threshold=threshold)
+    # Files with an existing transparent background must not be black-keyed:
+    # doing so ate the dark links between parts of Phobos's cloak and left his
+    # hands floating as separate islands. Black-key only almost-opaque legacy
+    # crops; otherwise trust the supplied alpha channel.
+    raw_mask = pygame.mask.from_surface(src, 8)
+    if raw_mask.count() >= src.get_width() * src.get_height() * 0.98:
+        src = make_border_black_transparent(src, threshold=threshold)
+    else:
+        src = src.convert_alpha().copy()
     try:
         components = pygame.mask.from_surface(src, 8).connected_components(4)
     except (AttributeError, pygame.error):
@@ -4042,15 +4063,16 @@ class Game:
         self.mg_t_kind=random.choice(list(PIECES)); self.mg_t_rot=0; self.mg_t_x=3; self.mg_t_y=0
         self.mg_t_next=random.choice(list(PIECES)); self.mg_t_drop=0
         self.mg_maze_w,self.mg_maze_h,self.mg_maze_tunnel_y,self.mg_maze_walls=build_will_maze()
-        self.mg_maze_cell=22; self.mg_maze_origin=(100,162)
-        self.mg_maze_player=[2,2]; self.mg_maze_dir=(1,0); self.mg_maze_next=(1,0)
-        homes=((14,16),(13,17),(16,17),(15,18))
+        self.mg_maze_cell=22; self.mg_maze_origin=(122,166)
+        self.mg_maze_player=[13,23]; self.mg_maze_dir=(-1,0); self.mg_maze_next=(-1,0)
+        homes=((13,15),(14,15),(12,16),(15,16))
+        release_frames=(0,FPS*4,FPS*9,FPS*15)
         self.mg_maze_ghosts=[]
         for kind,(gx,gy) in enumerate(homes):
             self.mg_maze_ghosts.append({"x":gx,"y":gy,"kind":kind,"home":(gx,gy),
                                         "dir":(-1,0),"state":"active" if kind==0 else "house",
-                                        "release":kind*FPS*2})
-        self.mg_maze_house={(x,y) for y in range(15,19) for x in range(13,17)}
+                                        "release":release_frames[kind]})
+        self.mg_maze_house={(x,y) for y in range(14,18) for x in range(12,16)}
         self.mg_fright=0; self.mg_fright_chain=0
         self.reset_will_maze_wave()
         self.play_minigame_music(name)
@@ -4066,7 +4088,10 @@ class Game:
     def caleb_player_rect(self, ducking=None):
         if ducking is None:
             ducking=self.mg_duck_timer>0 or pygame.key.get_pressed()[pygame.K_DOWN]
-        foot_y=int(self.mg_ground+25)
+        # The hitbox follows the animated vertical position. It used to stay
+        # nailed to the floor, making SPACE change velocity without producing
+        # either a visible or physical jump.
+        foot_y=int(self.mg_player[1]+25)
         return pygame.Rect(116,foot_y-68,88,68) if ducking else pygame.Rect(122,foot_y-138,76,138)
 
     def caleb_obstacle_rect(self, obstacle):
@@ -4198,8 +4223,8 @@ class Game:
         elif name=="WILL MAZE":
             if self.mg_fright>0: self.mg_fright-=1
             elif self.mg_fright_chain: self.mg_fright_chain=0
-            # Will advances every seven frames; ghosts are deliberately slower.
-            if self.mg_tick%7==0:
+            # Slower, readable motion: Will still has a modest speed advantage.
+            if self.mg_tick%9==0:
                 current=tuple(self.mg_maze_player)
                 turn=will_maze_step(current,self.mg_maze_next,self.mg_maze_walls,self.mg_maze_w,self.mg_maze_h,self.mg_maze_tunnel_y)
                 if turn is not None: self.mg_maze_dir=self.mg_maze_next
@@ -4213,7 +4238,7 @@ class Game:
                     self.mg_wave+=1; self.mg_score+=100; self.reset_will_maze_wave()
 
             px,py=self.mg_maze_player
-            ghost_step=max(9,12-min(3,self.mg_wave//3))+(3 if self.mg_fright>0 else 0)
+            ghost_step=max(12,15-min(3,self.mg_wave//3))+(4 if self.mg_fright>0 else 0)
             if self.mg_tick%ghost_step==0:
                 dirs=((1,0),(-1,0),(0,1),(0,-1))
                 scatter_targets=((self.mg_maze_w-2,1),(1,1),(self.mg_maze_w-2,self.mg_maze_h-2),(1,self.mg_maze_h-2))
@@ -4221,7 +4246,7 @@ class Game:
                 for ghost in self.mg_maze_ghosts:
                     kind=ghost["kind"]
                     if ghost["state"]=="house" and self.mg_tick>=ghost["release"]:
-                        ghost.update({"x":14+kind%2,"y":14,"state":"active","dir":(0,-1)})
+                        ghost.update({"x":13+kind%2,"y":12,"state":"active","dir":(-1 if kind%2 else 1,0)})
                     gx,gy=ghost["x"],ghost["y"]
                     if ghost["state"]=="house": continue
                     if ghost["state"]=="eyes": target=ghost["home"]
@@ -4258,9 +4283,10 @@ class Game:
                 else:
                     self.mg_lives-=1
                     if self.mg_lives<=0: self.minigame_game_over("WILL WAS CAUGHT"); return
-                    self.mg_maze_player=[2,2]; self.mg_maze_dir=(1,0); self.mg_maze_next=(1,0)
+                    self.mg_maze_player=[13,23]; self.mg_maze_dir=(-1,0); self.mg_maze_next=(-1,0)
+                    releases=(0,FPS*4,FPS*9,FPS*15)
                     for g in self.mg_maze_ghosts:
-                        g["x"],g["y"]=g["home"]; g["state"]="active" if g["kind"]==0 else "house"; g["release"]=self.mg_tick+g["kind"]*FPS*2
+                        g["x"],g["y"]=g["home"]; g["state"]="active" if g["kind"]==0 else "house"; g["release"]=self.mg_tick+releases[g["kind"]]
                     return
         elif name=="HAY LIN FLIGHT":
             speed=6.0+min(7.0,self.mg_tick/800.0); self.mg_vel[1]+=.46; self.mg_player[1]+=self.mg_vel[1]
@@ -4446,13 +4472,15 @@ class Game:
         self.text(self.collection_gallery_title if self.collection_page=="GALLERY" else self.collection_page,55,88,self.font,COLORS["text"])
         items=self.collection_current_items()
         if self.collection_page=="GALLERY":
-            list_rect=pygame.Rect(42,135,420,805); preview=pygame.Rect(490,135,465,805)
+            # WINDOW_W is 860: the old 490+465 preview extended 95 pixels past
+            # the canvas and was visibly clipped on macOS. Keep a real gutter.
+            list_rect=pygame.Rect(42,135,350,805); preview=pygame.Rect(410,135,410,805)
             pygame.draw.rect(self.canvas,(16,10,28),preview); pygame.draw.rect(self.canvas,(100,65,125),preview,2)
             start=max(0,min(self.collection_item_index-9,max(0,len(items)-19)))
             for row,i in enumerate(range(start,min(len(items),start+19))):
                 item=items[i]; y=155+row*38
-                if i==self.collection_item_index: pygame.draw.rect(self.canvas,(82,42,105),(48,y-4,405,32))
-                self.text(("▶ " if i==self.collection_item_index else "  ")+item[:31],58,y,self.small)
+                if i==self.collection_item_index: pygame.draw.rect(self.canvas,(82,42,105),(48,y-4,338,32))
+                self.text(("▶ " if i==self.collection_item_index else "  ")+item[:25],58,y,self.small)
             if self.collection_gallery_files and self.collection_item_index < len(self.collection_gallery_files):
                 fp=self.collection_gallery_files[self.collection_item_index]
                 try:
@@ -4543,7 +4571,7 @@ class Game:
             pr=self.caleb_player_rect(ducking); src=self.mg_art.get("caleb")
             if src:
                 target=(88,68) if ducking else (120,138)
-                im=pygame.transform.smoothscale(src,target); self.canvas.blit(im,im.get_rect(midbottom=(160,self.mg_ground+25)))
+                im=pygame.transform.smoothscale(src,target); self.canvas.blit(im,im.get_rect(midbottom=(160,int(self.mg_player[1]+25))))
             else: pygame.draw.rect(self.canvas,(165,115,80),pr)
             for o in self.mg_obstacles:
                 pygame.draw.rect(self.canvas,(130,80,70),self.caleb_obstacle_rect(o))

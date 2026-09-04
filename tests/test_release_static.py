@@ -49,9 +49,9 @@ class ReleaseStaticTests(unittest.TestCase):
 
     def test_will_maze_is_connected_and_inside_arena(self):
         width, height, tunnel_y, walls = game.build_will_maze()
-        self.assertEqual((width, height, tunnel_y), (30, 33, 16))
+        self.assertEqual((width, height, tunnel_y), (28, 31, 15))
         open_cells = {(x, y) for y in range(height) for x in range(width) if (x, y) not in walls}
-        seen = {(2, 2)}; queue = deque(seen)
+        seen = {(13, 23)}; queue = deque(seen)
         while queue:
             cell = queue.popleft()
             for direction in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -60,8 +60,8 @@ class ReleaseStaticTests(unittest.TestCase):
                     seen.add(nxt); queue.append(nxt)
         self.assertEqual(seen, open_cells)
         self.assertEqual(game.will_maze_step((0, tunnel_y), (-1, 0), walls, width, height, tunnel_y), (width - 1, tunnel_y))
-        self.assertLessEqual(100 + width * 22, 930)
-        self.assertLessEqual(162 + height * 22, 905)
+        self.assertLessEqual(122 + width * 22, 930)
+        self.assertLessEqual(166 + height * 22, 905)
 
     def test_bricks_and_invaders_are_inside_arena(self):
         arena = (70, 145, 860, 760)
