@@ -221,6 +221,12 @@ def taranee_invader_layout(arena, wave=1):
             for y in range(rows) for x in range(columns)]
 
 
+def irma_dark_water_curve(tick):
+    """Return the visible level, spawn interval and speed for Irma's five lanes."""
+    level = 1 + max(0, tick) // (FPS * 18)
+    return level, max(30, 86 - level * 4), 3.0 + min(5.0, (level - 1) * .32)
+
+
 class MusicPool:
     def __init__(self):
         self.phase = None
@@ -644,7 +650,7 @@ class Game:
         self.collection_page = "root"
         self.collection_item_index = 0
         self.collection_items = []
-        self.minigame_names = ["SNAKE — BLUNK/CEDRIC/PHOBOS", "WILL MAZE", "HAY LIN FLIGHT", "CALEB RUNNER", "HEART BREAKER", "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "BLUNK WASHING", "IRMA BUBBLE TROUBLE", "IRMA WHIRLPOOL", "BLUNK TREASURE ESCAPE", "CORNELIA STONE COVERS", "IRMA DARK WATER PANIC", "HAY LIN RESCUE", "PHOBOS TETRIS ???"]
+        self.minigame_names = ["SNAKE — BLUNK/CEDRIC/PHOBOS", "WILL MAZE", "HAY LIN FLIGHT", "CALEB RUNNER", "HEART BREAKER", "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "BLUNK WASHING", "IRMA BUBBLE TROUBLE", "IRMA WHIRLPOOL", "BLUNK TREASURE ESCAPE", "CORNELIA STONE COVERS", "IRMA DARK WATER PANIC", "PHOBOS TETRIS ???"]
         self.minigame_index = 0
         self.minigame = None
         self.collection_cutscene = False
@@ -664,6 +670,7 @@ class Game:
         self.intro_scene = 0
         self.intro_scene_tick = 0
         self.intro_music_stage = None
+        self.intro_music_path = None
         self.intro_dir = ASSET_DIR / "cutscenes" / "intro"
         self.intro_processed_dir = self.intro_dir / "processed"
         self.intro_images = {}
@@ -903,7 +910,7 @@ class Game:
             "brilliant": "extra/brilliant.wav", "brilliant_laugh": "extra/brilliant_laugh.wav",
             "need_crystal": "extra2/need_crystal.wav", "well_girls": "extra2/well_girls.wav",
             "destroy_weak_link": "extra2/destroy_weak_link.wav",
-            "expected_no_less": "extra2/expected_no_less.wav", "failed_last_time": "extra2/failed_last_time.wav",
+            "expected_no_less": "extra2/expected_no_less.wav",
             "you_loser": "extra2/you_loser.wav", "your_power_is_nothing": "extra2/your_power_is_nothing.wav",
             "last_hope_universe": "extra2/last_hope_universe.wav", "new_era_phobos": "extra2/new_era_phobos.wav",
             "no_need_to_hurry": "extra2/no_need_to_hurry.wav", "waiting_achieves": "extra2/waiting_achieves.wav",
@@ -2176,10 +2183,12 @@ class Game:
                 self.loser_streak_voice_used = True
                 return
         if random.random() < 0.38:
-            candidates = [self.voice_paths.get("failed_last_time"), self.voice_paths.get("expected_no_less")]
-            candidates = [p for p in candidates if p and p.exists()]
-            if candidates:
-                self.play_external_voice(random.choice(candidates), force=True)
+            # failed_last_time.wav is a 145-second editor export accidentally
+            # placed among short replies. Keep it archived on disk, but never
+            # select it as a Game Over line.
+            expected = self.voice_paths.get("expected_no_less")
+            if expected and expected.exists():
+                self.play_external_voice(expected, force=True)
 
     def piece_to_character(self, kind):
         return {"I":"cornelia","J":"taranee","L":"haylin","T":"caleb","O":"blunk","S":"irma","Z":"will"}.get(kind)
@@ -3872,10 +3881,16 @@ class Game:
         if not files:
             fallback = ASSET_DIR / "audio" / "collection" / "intro_music.mp3"
             files = [fallback] if fallback.exists() else []
-        pygame.mixer.music.stop()
         if files:
+            chosen = random.choice(files)
+            # All current intro stages use the same fallback track. Do not
+            # restart it at scene boundaries; a future stage-specific file
+            # will still replace it normally.
+            if self.intro_music_path == chosen and pygame.mixer.music.get_busy():
+                return
             try:
-                pygame.mixer.music.load(str(random.choice(files))); pygame.mixer.music.play(-1); pygame.mixer.music.set_volume(0.72)
+                pygame.mixer.music.stop(); pygame.mixer.music.load(str(chosen)); pygame.mixer.music.play(-1); pygame.mixer.music.set_volume(0.72)
+                self.intro_music_path = chosen
             except pygame.error: pass
 
     def restart_intro(self):
@@ -3884,6 +3899,7 @@ class Game:
         self.intro_scene_tick = 0
         self.intro_tick = 0
         self.intro_music_stage = None
+        self.intro_music_path = None
         self.intro_scene_sfx_played.clear()
         self.intro_text_last_blip_char = -1
         self.intro_voice_played = False
@@ -4193,7 +4209,7 @@ class Game:
     def collection_current_items(self):
         if self.collection_page == "CUTSCENES": return ["INTRO / OPENING", "100 LINES — RESISTANCE", "200 LINES — CINEMATIC", "PHOBOS ROOM", "BACK"]
         if self.collection_page == "MINIGAMES": return self.minigame_names + ["BACK"]
-        if self.collection_page == "AUDIO": return ["INTRO MUSIC", "PHOBOS 0–99 — ARROGANT PRINCE", "PHOBOS ROOM — DARK THEME", "PHOBOS 200+ — MAIN THEME", "PHASE 2 — TRACK 1", "PHASE 2 — TRACK 2", "PHASE 2 — TRACK 3", "WITCH ENDING", "MINIGAMES MUSIC 1", "MINIGAMES MUSIC 2", "MINIGAMES — FOR ARCADE", "VTD — TRACK 1", "VTD — TRACK 2", "STOP", "BACK"]
+        if self.collection_page == "AUDIO": return ["MENU — TRACK 1", "MENU — TRACK 2", "INTRO MUSIC", "PHOBOS 0–99 — ARROGANT PRINCE", "PHOBOS ROOM — DARK THEME", "PHOBOS 200+ — MAIN THEME", "PHASE 2 — TRACK 1", "PHASE 2 — TRACK 2", "PHASE 2 — TRACK 3", "WITCH ENDING", "MINIGAMES MUSIC 1", "MINIGAMES MUSIC 2", "MINIGAMES — FOR ARCADE", "VTD — TRACK 1", "VTD — TRACK 2", "STOP", "BACK"]
         if self.collection_page == "ART & SPRITES": return ["ACTION POSES", "HORROR TETROMINOES", "PHOBOS ROOM STATES", "MERIDIAN WINDOWS", "BACK"]
         if self.collection_page == "DEVELOPMENT ARCHIVE": return ["FAILED / UNUSED ART", "SCREENSHOTS", "FACTS & NOTES", "BACK"]
         if self.collection_page == "GALLERY": return [fp.name for fp in self.collection_gallery_files] + ["BACK"]
@@ -4246,7 +4262,7 @@ class Game:
         if item=="STOP":
             if pygame.mixer.get_init(): pygame.mixer.music.stop()
             self.collection_audio_item=None; return
-        mapping={"INTRO MUSIC":ASSET_DIR/"audio"/"collection"/"intro_music.mp3","MINIGAMES MUSIC 1":ASSET_DIR/"audio"/"collection"/"minigames_1.mp3","MINIGAMES MUSIC 2":ASSET_DIR/"audio"/"collection"/"minigames_2.mp3","MINIGAMES — FOR ARCADE":ASSET_DIR/"audio"/"minigames"/"arcade_6.mp3","PHASE 2 — TRACK 1":ASSET_DIR/"audio"/"collection"/"phase2_1.mp3","PHASE 2 — TRACK 2":ASSET_DIR/"audio"/"collection"/"phase2_2.mp3","PHASE 2 — TRACK 3":ASSET_DIR/"audio"/"collection"/"phase2_3.mp3","WITCH ENDING":ASSET_DIR/"audio"/"collection"/"witch_ending.mp3","PHOBOS 0–99 — ARROGANT PRINCE":ASSET_DIR/"audio"/"music"/"phase_0_99_phobos"/"Arrogant_Prince_of_the_Obsidian_Court.mp3","PHOBOS ROOM — DARK THEME":ASSET_DIR/"audio"/"music"/"phobos_room"/"PhobosthemeDark.mp3","PHOBOS 200+ — MAIN THEME":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_main_theme_3_phase.mp3","VTD — TRACK 1":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_01.mp3","VTD — TRACK 2":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_02.mp3"}
+        mapping={"MENU — TRACK 1":ASSET_DIR/"audio"/"music"/"menu"/"menu_1.mp3","MENU — TRACK 2":ASSET_DIR/"audio"/"music"/"menu"/"menu_2.mp3","INTRO MUSIC":ASSET_DIR/"audio"/"collection"/"intro_music.mp3","MINIGAMES MUSIC 1":ASSET_DIR/"audio"/"collection"/"minigames_1.mp3","MINIGAMES MUSIC 2":ASSET_DIR/"audio"/"collection"/"minigames_2.mp3","MINIGAMES — FOR ARCADE":ASSET_DIR/"audio"/"minigames"/"arcade_6.mp3","PHASE 2 — TRACK 1":ASSET_DIR/"audio"/"collection"/"phase2_1.mp3","PHASE 2 — TRACK 2":ASSET_DIR/"audio"/"collection"/"phase2_2.mp3","PHASE 2 — TRACK 3":ASSET_DIR/"audio"/"collection"/"phase2_3.mp3","WITCH ENDING":ASSET_DIR/"audio"/"collection"/"witch_ending.mp3","PHOBOS 0–99 — ARROGANT PRINCE":ASSET_DIR/"audio"/"music"/"phase_0_99_phobos"/"Arrogant_Prince_of_the_Obsidian_Court.mp3","PHOBOS ROOM — DARK THEME":ASSET_DIR/"audio"/"music"/"phobos_room"/"PhobosthemeDark.mp3","PHOBOS 200+ — MAIN THEME":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_main_theme_3_phase.mp3","VTD — TRACK 1":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_01.mp3","VTD — TRACK 2":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_02.mp3"}
         fp=mapping.get(item,Path("__missing__"))
         if not (fp.exists() and pygame.mixer.get_init()): return
         if self.collection_audio_item==item and pygame.mixer.music.get_busy():
@@ -4325,8 +4341,8 @@ class Game:
         self.mg_garden_color=0; self.mg_garden_pulse=0; self.mg_garden_mistakes=0; self.mg_garden_streak=0
         # Fixed-position state shared by the v6.37 Game & Watch-style games.
         self.mg_gw_position=0; self.mg_gw_cedric=6; self.mg_gw_carried=0; self.mg_gw_banked=0
-        self.mg_gw_safe_until=FPS; self.mg_gw_cover=1; self.mg_gw_lane=1
-        self.mg_gw_stored=0; self.mg_gw_rescue_lane=1
+        self.mg_gw_safe_until=FPS; self.mg_gw_cover=1; self.mg_gw_lane=2
+        self.mg_gw_stored=0
         self.mg_t_board=[[None for _ in range(10)] for _ in range(18)]
         self.mg_t_kind=random.choice(list(PIECES)); self.mg_t_rot=0; self.mg_t_x=3; self.mg_t_y=0
         self.mg_t_next=random.choice(list(PIECES)); self.mg_t_drop=0
@@ -4480,12 +4496,9 @@ class Game:
             elif key==pygame.K_RIGHT: self.mg_gw_cover=min(3,self.mg_gw_cover+1)
         elif name=="IRMA DARK WATER PANIC":
             if key==pygame.K_LEFT: self.mg_gw_lane=max(0,self.mg_gw_lane-1)
-            elif key==pygame.K_RIGHT: self.mg_gw_lane=min(2,self.mg_gw_lane+1)
+            elif key==pygame.K_RIGHT: self.mg_gw_lane=min(4,self.mg_gw_lane+1)
             elif key==pygame.K_SPACE and self.mg_gw_stored>=3:
                 self.mg_score+=15; self.mg_gw_stored=0; self.mg_wave+=1
-        elif name=="HAY LIN RESCUE":
-            if key==pygame.K_LEFT: self.mg_gw_rescue_lane=max(0,self.mg_gw_rescue_lane-1)
-            elif key==pygame.K_RIGHT: self.mg_gw_rescue_lane=min(2,self.mg_gw_rescue_lane+1)
         elif name=="PHOBOS TETRIS ???":
             def valid(nx,ny,nr):
                 for dx,dy in SHAPES[self.mg_t_kind][nr]:
@@ -4779,10 +4792,12 @@ class Game:
                 if traveller[0]==self.mg_gw_cover: self.mg_score+=2
                 elif self.game_watch_take_hit("THE MERIDIAN ROAD COLLAPSED"): return
         elif name=="IRMA DARK WATER PANIC":
-            spawn=max(24,78-self.mg_level*5)
+            # Five fixed lanes make positioning more deliberate. Difficulty
+            # rises every 18 seconds: drops arrive more often and fall faster,
+            # but the game never inserts a safety pause after filling the vessel.
+            irma_level,spawn,speed=irma_dark_water_curve(self.mg_tick)
             if self.mg_tick%spawn==0:
-                self.mg_objects.append([random.randrange(3),float(arena.top+25)])
-            speed=3.2+min(5.8,self.mg_level*.38)
+                self.mg_objects.append([random.randrange(5),float(arena.top+25)])
             for drop in self.mg_objects[:]:
                 drop[1]+=speed
                 if drop[1]<arena.bottom-92: continue
@@ -4790,23 +4805,6 @@ class Game:
                 if drop[0]==self.mg_gw_lane and self.mg_gw_stored<3:
                     self.mg_gw_stored+=1; self.mg_score+=1
                 elif self.game_watch_take_hit("DARK WATER FLOODED MERIDIAN"): return
-        elif name=="HAY LIN RESCUE":
-            spawn=max(32,94-self.mg_level*6)
-            if self.mg_tick%spawn==0:
-                self.mg_objects.append([random.randrange(3),float(arena.top+35),0])
-            speed=3.0+min(6.0,self.mg_level*.36)
-            for citizen in self.mg_objects[:]:
-                citizen[1]+=speed
-                if citizen[1]<arena.bottom-105: continue
-                if citizen[0]!=self.mg_gw_rescue_lane:
-                    self.mg_objects.remove(citizen)
-                    if self.game_watch_take_hit("A CITIZEN FELL BETWEEN PORTALS"): return
-                    continue
-                citizen[2]+=1
-                if citizen[2]>=2:
-                    self.mg_objects.remove(citizen); self.mg_score+=5; self.mg_wave+=1
-                else:
-                    citizen[0]=(citizen[0]+1)%3; citizen[1]=float(arena.top+55)
         elif name=="PHOBOS TETRIS ???":
             def valid(nx,ny,nr):
                 for dx,dy in SHAPES[self.mg_t_kind][nr]:
@@ -5056,7 +5054,7 @@ class Game:
             mg_sprite("cornelia",(WINDOW_W//2,390),165,225)
             self.text("LEFT/RIGHT — MOVE THE EARTH COVER",205,850,self.small)
         elif n=="IRMA DARK WATER PANIC":
-            xs=(220,430,640)
+            xs=(130,280,430,580,730)
             for x in xs: pygame.draw.line(self.canvas,(50,70,95),(x,arena.top+25),(x,arena.bottom-90),2)
             for lane,y in self.mg_objects:
                 x=xs[int(lane)]; pygame.draw.circle(self.canvas,(85,35,125),(x,int(y)),15)
@@ -5070,19 +5068,9 @@ class Game:
             # Dumped corruption lands on Phobos's guards below the ledge.
             for gx in (330,530):
                 pygame.draw.circle(self.canvas,(75,55,62),(gx,875),20); pygame.draw.rect(self.canvas,(82,60,68),(gx-18,888,36,25))
-            self.text(f"VESSEL {self.mg_gw_stored}/3   LEFT/RIGHT CATCH   SPACE DUMP",95,125,self.small)
-        elif n=="HAY LIN RESCUE":
-            xs=(200,430,660)
-            for x in xs: pygame.draw.line(self.canvas,(70,100,135),(x,arena.top+35),(x,arena.bottom-105),2)
-            for lane,y,bounces in self.mg_objects:
-                x=xs[int(lane)]; col=(240,210,165) if not bounces else (190,225,250)
-                pygame.draw.circle(self.canvas,col,(x,int(y)),19)
-                pygame.draw.line(self.canvas,col,(x,int(y)+19),(x,int(y)+48),6)
-            hx=xs[self.mg_gw_rescue_lane]
-            mg_sprite("haylin_flight",(hx,790),118,105)
-            pygame.draw.arc(self.canvas,(130,210,245),(hx-70,790,140,55),math.pi,2*math.pi,7)
-            pygame.draw.ellipse(self.canvas,(115,70,160),(arena.right-105,250,70,150),7)
-            self.text("LEFT/RIGHT — BOUNCE EACH CITIZEN TWICE",175,850,self.small)
+            irma_level,_,_=irma_dark_water_curve(self.mg_tick)
+            self.text(f"VESSEL {self.mg_gw_stored}/3   LANE {self.mg_gw_lane+1}/5   LEVEL {irma_level}",130,125,self.small)
+            self.text("LEFT/RIGHT — CATCH   SPACE — DUMP AT 3",205,850,self.small)
         else:
             bx,by,cs=330,175,34
             pygame.draw.rect(self.canvas,(5,5,8),(bx,by,10*cs,18*cs)); pygame.draw.rect(self.canvas,(100,90,105),(bx,by,10*cs,18*cs),2)

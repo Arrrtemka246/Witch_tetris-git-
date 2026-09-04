@@ -27,12 +27,13 @@ class PygameSmokeTests(unittest.TestCase):
         pygame.quit()
 
     def test_changed_minigames_draw_one_frame(self):
-        self.assertEqual(len(self.game.minigame_names), 15)
+        self.assertEqual(len(self.game.minigame_names), 14)
         self.assertNotIn("IRMA RAIN DANCE", self.game.minigame_names)
+        self.assertNotIn("HAY LIN RESCUE", self.game.minigame_names)
         for name in ("WILL MAZE", "HAY LIN FLIGHT", "CALEB RUNNER", "HEART BREAKER",
                      "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "IRMA WHIRLPOOL",
                      "BLUNK TREASURE ESCAPE", "CORNELIA STONE COVERS",
-                     "IRMA DARK WATER PANIC", "HAY LIN RESCUE"):
+                     "IRMA DARK WATER PANIC"):
             with self.subTest(name=name):
                 self.game.start_minigame(name)
                 self.game.update_minigame()
@@ -97,7 +98,7 @@ class PygameSmokeTests(unittest.TestCase):
         self.assertEqual(self.game.mg_gw_banked, 1)
         self.assertEqual(self.game.mg_score, 10)
 
-    def test_three_other_game_watch_loops_score_without_victory(self):
+    def test_two_other_game_watch_loops_score_without_victory(self):
         self.game.start_minigame("CORNELIA STONE COVERS")
         self.game.mg_objects = [[self.game.mg_gw_cover, 1]]
         self.game.update_minigame()
@@ -110,11 +111,23 @@ class PygameSmokeTests(unittest.TestCase):
         self.assertEqual(self.game.mg_gw_stored, 1)
         self.assertFalse(self.game.mg_over)
 
-        self.game.start_minigame("HAY LIN RESCUE")
-        self.game.mg_objects = [[self.game.mg_gw_rescue_lane, self.game.mg_arena.bottom - 106.0, 0]]
-        self.game.update_minigame()
-        self.assertEqual(self.game.mg_objects[0][2], 1)
-        self.assertFalse(self.game.mg_over)
+    def test_irma_dark_water_has_five_lanes_and_accelerates(self):
+        from main import FPS, irma_dark_water_curve
+
+        self.game.start_minigame("IRMA DARK WATER PANIC")
+        self.assertEqual(self.game.mg_gw_lane, 2)
+        for _ in range(10):
+            self.game.handle_minigame_key(pygame.K_LEFT)
+        self.assertEqual(self.game.mg_gw_lane, 0)
+        for _ in range(10):
+            self.game.handle_minigame_key(pygame.K_RIGHT)
+        self.assertEqual(self.game.mg_gw_lane, 4)
+
+        level_1, spawn_1, speed_1 = irma_dark_water_curve(0)
+        level_5, spawn_5, speed_5 = irma_dark_water_curve(FPS * 18 * 4)
+        self.assertEqual((level_1, level_5), (1, 5))
+        self.assertLess(spawn_5, spawn_1)
+        self.assertGreater(speed_5, speed_1)
 
     def test_cornelia_garden_requires_matching_colour_and_multiple_hits(self):
         self.game.start_minigame("CORNELIA EARTH GARDEN")

@@ -70,58 +70,6 @@ class BlunkTreasureEscapeState:
 
 
 @dataclass
-class FallingRescueState:
-    """Catch falling Meridian citizens and bounce them toward a portal."""
-
-    seed: int = 0
-    lanes: int = 3
-    catcher_lane: int = 1
-    lives: int = 3
-    score: int = 0
-    tick_count: int = 0
-    objects: list[list[float | int]] = field(default_factory=list)
-    status: str = "playing"
-
-    def __post_init__(self) -> None:
-        self._rng = random.Random(self.seed)
-
-    @property
-    def level(self) -> int:
-        return 1 + self.score // 12
-
-    def move(self, delta: int) -> None:
-        if self.status == "playing":
-            self.catcher_lane = max(0, min(self.lanes - 1, self.catcher_lane + delta))
-
-    def tick(self) -> None:
-        if self.status != "playing":
-            return
-        self.tick_count += 1
-        spawn_interval = max(24, 78 - self.level * 4)
-        if self.tick_count % spawn_interval == 0:
-            self.objects.append([self._rng.randrange(self.lanes), 0.0, 0])
-        speed = 1.8 + min(5.2, self.level * 0.22)
-        for obj in self.objects[:]:
-            obj[1] = float(obj[1]) + speed
-            if float(obj[1]) < 100.0:
-                continue
-            if int(obj[0]) == self.catcher_lane:
-                obj[2] = int(obj[2]) + 1
-                if int(obj[2]) >= 2:
-                    self.objects.remove(obj)
-                    self.score += 1
-                else:
-                    obj[1] = 18.0
-                    obj[0] = min(self.lanes - 1, int(obj[0]) + 1)
-            else:
-                self.objects.remove(obj)
-                self.lives -= 1
-                if self.lives <= 0:
-                    self.status = "lost"
-                    return
-
-
-@dataclass
 class CorneliaManholeState:
     """Move one stone cover between cracks in a Meridian street."""
 
@@ -166,8 +114,8 @@ class IrmaOilPanicState:
     """Catch dark-water drops, then dump the full vessel on Phobos's guards."""
 
     seed: int = 0
-    lanes: int = 3
-    lane: int = 1
+    lanes: int = 5
+    lane: int = 2
     capacity: int = 3
     stored: int = 0
     lives: int = 3
@@ -194,10 +142,10 @@ class IrmaOilPanicState:
         if self.status != "playing":
             return
         self.tick_count += 1
-        level = 1 + self.score // 18
-        if self.tick_count % max(20, 68 - level * 3) == 0:
+        level = 1 + self.tick_count // 1080
+        if self.tick_count % max(30, 86 - level * 4) == 0:
             self.drops.append([self._rng.randrange(self.lanes), 0.0])
-        speed = 2.0 + min(6.0, level * 0.25)
+        speed = 3.0 + min(5.0, (level - 1) * 0.32)
         for drop in self.drops[:]:
             drop[1] = float(drop[1]) + speed
             if float(drop[1]) < 100.0:
@@ -214,7 +162,6 @@ class IrmaOilPanicState:
 
 GAME_WATCH_PROTOTYPES = (
     BlunkTreasureEscapeState,
-    FallingRescueState,
     CorneliaManholeState,
     IrmaOilPanicState,
 )
