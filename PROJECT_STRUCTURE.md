@@ -1,19 +1,34 @@
-# Current project structure
+# Структура W.I.T.C.H. Tetris v6.36.1
 
-Phase 1 tetromino mapping (fixed):
-- I = Cornelia
-- T = Caleb
-- O = Blunk
-- L = Hay Lin
-- J = Taranee
-- S = Irma
-- Z = Will
+## Главные файлы
 
-Story flow:
-- 0-99 lines: Phobos controls the seven transformed characters.
-- 100 lines: first resistance cutscene; game continues.
-- 100-199: Phobos remains in control, resistance increases.
-- 200 lines: Guardians/Caleb/Blunk break free; good ending cutscene.
-- 200+: endless Phase 2. Guardians fight Phobos's army; tetromino visuals are generic Lurdens/soldiers and may have multiple visual variants per shape.
+- `main.py` — игра, сюжет, Collection и логика всех 11 мини-игр.
+- `requirements.txt` — зависимость Pygame.
+- `settings.json` — сохраняемые настройки персонажей и начальной скорости.
+- `records.json` — таблица рекордов.
+- `tests/` — статические и Pygame smoke-проверки.
 
-Audio folders are prepared for music, SFX, and future real recorded Phobos voice lines. Empty folders contain .keep files so they remain inside ZIP.
+## Игровые ресурсы
+
+- `assets/audio/` — музыка, звуки и реплики.
+- `assets/backgrounds/` — основные фоны.
+- `assets/cutscenes/` — вступление и сюжетные сцены 100/200/300 линий.
+- `assets/effects/` — Сердце Кандракара и эффекты.
+- `assets/menu/` — меню и портреты Фобоса.
+- `assets/minigames/` — графика мини-игр.
+- `assets/sprites/phase1/` — персонажи-фигуры этапа 0–199.
+- `assets/sprites/phase2/` — будущие/альтернативные материалы этапа 200+.
+- `assets/sprites/horror/` — хоррор-фигуры ветки Фобоса.
+- `assets/secrets/` — материалы секретных кодов.
+
+## Постоянное соответствие фигур
+
+- I — Cornelia
+- J — Taranee
+- L — Hay Lin
+- T — Caleb
+- O — Blunk
+- S — Irma
+- Z — Will
+
+Геометрия тетромино в v6.36.1 не менялась.

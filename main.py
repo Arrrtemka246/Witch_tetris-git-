@@ -10,11 +10,12 @@ from pathlib import Path
 import pygame
 
 # ============================================================
-# W.I.T.C.H. Tetris — Pygame build v6.21
+# W.I.T.C.H. Tetris — Pygame build v6.36.1
 # Full-color 50x50 source cells, auto-fit, transparency, Hold, story checkpoints and secret-code system.
 # ============================================================
 
 FPS = 60
+BUILD_VERSION = "6.36.1"
 BOARD_W = 10
 BOARD_H = 20
 CELL = 50
@@ -50,6 +51,11 @@ PHASE_MUSIC = {
     2: MUSIC_ROOT / "phase_200_plus_guardians",
     3: MUSIC_ROOT / "phobos_route",
 }
+PHASE_MUSIC_FALLBACKS = {
+    # Until a separate Guardians soundtrack is supplied, the established
+    # ending theme keeps the post-200 Guardians route from becoming silent.
+    2: [ASSET_DIR / "audio" / "collection" / "witch_ending.mp3"],
+}
 RECORDS_PATH = BASE_DIR / "records.json"
 SECRET_DIR = ASSET_DIR / "secrets"
 PORN_DIR = SECRET_DIR / "porn"
@@ -81,6 +87,16 @@ SC_Q = 20
 PHYSICAL_LETTERS = {4 + i: chr(ord("a") + i) for i in range(26)}
 SUPPORTED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
 VOICE_DIR = ASSET_DIR / "audio" / "voice" / "phobos"
+
+# The supplied action sheet is laid out as 4 + 5 + 5 poses rather than a
+# regular 4x3 grid. Rectangles intentionally stop before neighbouring poses.
+PHOBOS_ACTION_RECTS = [
+    (0, 0, 384, 330), (384, 0, 384, 330), (768, 0, 384, 330), (1152, 0, 384, 330),
+    (0, 330, 307, 332), (307, 330, 307, 332), (614, 330, 307, 332),
+    (921, 330, 307, 332), (1228, 330, 308, 332),
+    (0, 662, 307, 362), (307, 662, 307, 362), (614, 662, 307, 362),
+    (921, 662, 307, 362), (1228, 662, 308, 362),
+]
 
 # Same geometry as the last Pyxel build.
 BASE_SHAPES = {
@@ -137,6 +153,74 @@ def bbox(shape):
     return max(x for x, _ in shape) + 1, max(y for _, y in shape) + 1
 
 
+def build_will_maze():
+    """Return an original Pac-Man-like maze with one central wrap tunnel.
+
+    Solid mirrored islands create readable lanes while leaving the whole map
+    connected.  This is intentionally not a copy of the arcade maze.
+    """
+    width, height, tunnel_y = 28, 31, 15
+    walls = {(x, 0) for x in range(width)} | {(x, height - 1) for x in range(width)}
+    walls |= {(0, y) for y in range(height)} | {(width - 1, y) for y in range(height)}
+    walls -= {(0, tunnel_y), (width - 1, tunnel_y)}
+
+    def solid(left, top, right, bottom):
+        for y in range(top, bottom + 1):
+            for x in range(left, right + 1):
+                walls.add((x, y))
+
+    # Paired top/bottom islands give the board its maze rhythm without long
+    # fence lines that look like a spreadsheet.
+    top_islands = (
+        (2, 2, 6, 4), (9, 2, 11, 4), (16, 2, 18, 4), (21, 2, 25, 4),
+        (2, 7, 4, 9), (7, 7, 11, 9), (16, 7, 20, 9), (23, 7, 25, 9),
+        (2, 12, 6, 13), (8, 11, 10, 13), (17, 11, 19, 13), (21, 12, 25, 13),
+    )
+    for rect in top_islands:
+        solid(*rect)
+        left, top, right, bottom = rect
+        solid(left, height - 1 - bottom, right, height - 1 - top)
+
+    # Central ghost house. The two top cells form the only door.
+    for x in range(11, 17):
+        walls.add((x, 13)); walls.add((x, 18))
+    for y in range(13, 19):
+        walls.add((11, y)); walls.add((16, y))
+    walls -= {(13, 13), (14, 13)}
+    return width, height, tunnel_y, walls
+
+
+def will_maze_step(cell, direction, walls, width=28, height=31, tunnel_y=15):
+    x, y = cell; dx, dy = direction
+    nx, ny = x + dx, y + dy
+    if y == tunnel_y and dy == 0 and nx < 0:
+        nx = width - 1
+    elif y == tunnel_y and dy == 0 and nx >= width:
+        nx = 0
+    if not (0 <= nx < width and 0 <= ny < height) or (nx, ny) in walls:
+        return None
+    return nx, ny
+
+
+def heart_brick_layout(arena, wave=1):
+    """Pixel rectangles for an always-reachable 11-column brick wave."""
+    left, top, width, _height = arena
+    columns = 11; gap = 7; margin = 30
+    brick_w = (width - margin * 2 - gap * (columns - 1)) // columns
+    rows = min(7, 4 + wave // 2)
+    return [(left + margin + x * (brick_w + gap), top + 30 + y * 34, brick_w, 26)
+            for y in range(rows) for x in range(columns)]
+
+
+def taranee_invader_layout(arena, wave=1):
+    """Ten evenly-spaced columns, all inside Taranee's firing lane."""
+    left, top, width, _height = arena
+    columns = 10; rows = min(6, 3 + (wave + 1) // 2); margin = 45
+    step = (width - margin * 2) / (columns - 1)
+    return [[left + margin + x * step, top + 45 + y * 48]
+            for y in range(rows) for x in range(columns)]
+
+
 class MusicPool:
     def __init__(self):
         self.phase = None
@@ -148,7 +232,12 @@ class MusicPool:
         self.special_lock = False
         self.base_volume = 0.72
         self.duck_volume = 0.25
-        pygame.mixer.music.set_volume(self.base_volume) if pygame.mixer.get_init() else None
+        if pygame.mixer.get_init():
+            pygame.mixer.music.set_volume(self.base_volume)
+
+    @staticmethod
+    def ready():
+        return bool(pygame.mixer.get_init())
 
     def scan(self, folder: Path):
         if not folder.exists():
@@ -164,19 +253,21 @@ class MusicPool:
         self.current = None
         # A special soundtrack (VTD) owns the audio while locked. Remember the
         # new phase but never start normal music underneath it.
-        if self.enabled and not self.special_lock:
+        if self.enabled and not self.special_lock and self.ready():
             pygame.mixer.music.stop()
             self.play_next()
 
     def refill(self):
         files = self.scan(PHASE_MUSIC[self.phase]) if self.phase in PHASE_MUSIC else []
+        if not files:
+            files = [p for p in PHASE_MUSIC_FALLBACKS.get(self.phase, []) if p.exists()]
         random.shuffle(files)
         if len(files) > 1 and self.current is not None and files and files[0] == self.current:
             files[0], files[1] = files[1], files[0]
         self.queue = files
 
     def play_next(self):
-        if not self.enabled or self.phase is None or self.special_lock:
+        if not self.enabled or self.phase is None or self.special_lock or not self.ready():
             return
         # Keep a shuffled bag; refill only after every track in this phase was used.
         if not self.queue:
@@ -193,13 +284,13 @@ class MusicPool:
             self.current = None
 
     def skip(self):
-        if self.enabled and self.phase is not None and not self.special_lock:
+        if self.enabled and self.phase is not None and not self.special_lock and self.ready():
             pygame.mixer.music.stop()
             self.play_next()
 
     def toggle_loop(self):
         self.loop_current = not self.loop_current
-        if self.current and self.enabled and not self.special_lock:
+        if self.current and self.enabled and not self.special_lock and self.ready():
             try:
                 pygame.mixer.music.load(str(self.current))
                 pygame.mixer.music.play(-1 if self.loop_current else 0)
@@ -213,24 +304,26 @@ class MusicPool:
             pygame.mixer.music.set_volume(self.duck_volume if on else self.base_volume)
 
     def update(self):
-        if self.enabled and not self.special_lock and not self.paused and self.phase is not None and not pygame.mixer.music.get_busy():
+        if self.ready() and self.enabled and not self.special_lock and not self.paused and self.phase is not None and not pygame.mixer.music.get_busy():
             self.play_next()
 
     def pause(self):
-        if self.enabled and not self.paused:
+        if self.ready() and self.enabled and not self.paused:
             pygame.mixer.music.pause()
             self.paused = True
 
     def resume(self):
         if self.special_lock:
             return
-        if self.enabled and self.paused:
+        if self.ready() and self.enabled and self.paused:
             pygame.mixer.music.unpause()
             self.paused = False
 
     def toggle(self):
         self.enabled = not self.enabled
         self.paused = False
+        if not self.ready():
+            return
         if self.enabled:
             if not self.special_lock:
                 self.play_next()
@@ -242,7 +335,8 @@ class MusicPool:
         self.paused = False
         # Stop instead of pause: this guarantees there is no hidden normal
         # stream that can resume underneath VTD after a phase/menu transition.
-        pygame.mixer.music.stop()
+        if self.ready():
+            pygame.mixer.music.stop()
 
     def leave_special(self, restart=True):
         self.special_lock = False
@@ -253,7 +347,8 @@ class MusicPool:
             self.play_next()
 
     def stop(self):
-        pygame.mixer.music.stop()
+        if self.ready():
+            pygame.mixer.music.stop()
 
 
 def make_border_black_transparent(surface: pygame.Surface, threshold: int = 30) -> pygame.Surface:
@@ -292,6 +387,51 @@ def make_border_black_transparent(surface: pygame.Surface, threshold: int = 30) 
         if y > 0: stack.append((x, y - 1))
         if y + 1 < h: stack.append((x, y + 1))
     return src
+
+
+def load_clean_alpha(path: Path, threshold: int = 30) -> pygame.Surface:
+    """Load a sprite sheet crop and discard disconnected neighbour fragments.
+
+    Several supplied PNG files were rectangular crops from larger sprite
+    sheets.  Their black canvas is removed first; afterwards only the main
+    connected silhouette (and substantial connected companions) are kept.
+    This removes Will's stray hand, the top strips above Taranee/Hay Lin and
+    the extra fragments around Caleb, Cornelia and Phobos without rewriting
+    the source artwork.
+    """
+    src = pygame.image.load(str(path)).convert_alpha()
+    return clean_alpha_surface(src, threshold)
+
+
+def clean_alpha_surface(src: pygame.Surface, threshold: int = 30) -> pygame.Surface:
+    """Surface variant used for in-memory sprite-sheet frames."""
+    # Files with an existing transparent background must not be black-keyed:
+    # doing so ate the dark links between parts of Phobos's cloak and left his
+    # hands floating as separate islands. Black-key only almost-opaque legacy
+    # crops; otherwise trust the supplied alpha channel.
+    raw_mask = pygame.mask.from_surface(src, 8)
+    if raw_mask.count() >= src.get_width() * src.get_height() * 0.98:
+        src = make_border_black_transparent(src, threshold=threshold)
+    else:
+        src = src.convert_alpha().copy()
+    try:
+        components = pygame.mask.from_surface(src, 8).connected_components(4)
+    except (AttributeError, pygame.error):
+        return src
+    if not components:
+        return src
+    components.sort(key=lambda mask: mask.count(), reverse=True)
+    largest = max(1, components[0].count())
+    keep = pygame.mask.Mask(src.get_size(), fill=False)
+    # Detached anti-aliasing specks and neighbouring sheet cells are small;
+    # legitimate secondary parts are retained when they are substantial.
+    for component in components:
+        if component.count() >= largest * 0.12:
+            keep.draw(component, (0, 0))
+    matte = keep.to_surface(setcolor=(255, 255, 255, 255), unsetcolor=(0, 0, 0, 0))
+    cleaned = src.copy()
+    cleaned.blit(matte, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    return cleaned
 
 
 class SpriteSet:
@@ -371,7 +511,7 @@ class Game:
             pygame.mixer.init()
         except pygame.error as exc:
             print(f"[audio] pygame.mixer unavailable: {exc}")
-        pygame.display.set_caption("W.I.T.C.H. Tetris — Pygame v6.34 HOTFIX + ARCADE AUDIO")
+        pygame.display.set_caption(f"W.I.T.C.H. Tetris — Pygame v{BUILD_VERSION}")
         info = pygame.display.Info()
         avail_w = max(640, info.current_w - DISPLAY_MARGIN)
         avail_h = max(520, info.current_h - DISPLAY_MARGIN)
@@ -415,6 +555,7 @@ class Game:
         self.collection_audio_item = None
         self.collection_gallery_files = []
         self.collection_gallery_title = ""
+        self.collection_gallery_parent = "ART & SPRITES"
         self.mg_score = 0
         self.mg_tick = 0
         self.mg_player = [450, 760]
@@ -595,7 +736,7 @@ class Game:
             fp = PHOBOS_FACE_DIR / f"{name}.png"
             if fp.exists():
                 try:
-                    self.phobos_faces[name] = make_border_black_transparent(pygame.image.load(str(fp)).convert_alpha())
+                    self.phobos_faces[name] = load_clean_alpha(fp)
                 except pygame.error:
                     pass
 
@@ -630,6 +771,7 @@ class Game:
         self.meta_video_tick = 0
         self.meta_video_last_index = -1
         self.meta_video_surface = None
+        self.meta_video_music_state = None
         self.meta_video_manifest = {}
         self.meta_video_channel = pygame.mixer.Channel(4) if pygame.mixer.get_init() else None
         manifest_path = META_VIDEO_DIR / "manifest.json"
@@ -752,7 +894,7 @@ class Game:
         self.phobos_room_emotions = []
         state_files = sorted((PHOBOS_ROOM_DIR / "states").glob("state_*.png"))
         for fp in state_files:
-            try: self.phobos_room_emotions.append(pygame.image.load(str(fp)).convert_alpha())
+            try: self.phobos_room_emotions.append(load_clean_alpha(fp))
             except pygame.error: pass
         self.phobos_room_emotion = 0
         self.phobos_room_table = None
@@ -765,7 +907,17 @@ class Game:
         for key in ("phobos_face","will_face","irma_face","blunk_face","cedric_face","cornelia","caleb","taranee","haylin_face","haylin_flight","will_enemy_1","will_enemy_2","will_enemy_3","will_enemy_4"):
             fp = mg_art_dir / (key + ".png")
             if fp.exists():
-                try: self.mg_art[key] = pygame.image.load(str(fp)).convert_alpha()
+                try: self.mg_art[key] = load_clean_alpha(fp)
+                except pygame.error: pass
+        # Runner/shooter/garden need the supplied full-body action poses rather
+        # than the old small portrait crops.
+        for key,fp in {
+            "caleb": LINES100_DIR/"caleb_action.png",
+            "taranee": LINES100_DIR/"taranee_action.png",
+            "cornelia": LINES100_DIR/"cornelia_action.png",
+        }.items():
+            if fp.exists():
+                try: self.mg_art[key]=load_clean_alpha(fp)
                 except pygame.error: pass
         haylin_bg_fp = BACKGROUND_DIR / "phase_0_99_throne.png"
         if haylin_bg_fp.exists():
@@ -773,7 +925,7 @@ class Game:
             except pygame.error: pass
         heart_fp = EFFECT_DIR / "heart_kandrakar.png"
         if heart_fp.exists():
-            try: self.mg_art["heart_kandrakar"] = pygame.image.load(str(heart_fp)).convert_alpha()
+            try: self.mg_art["heart_kandrakar"] = load_clean_alpha(heart_fp, threshold=18)
             except pygame.error: pass
         self.phobos_type_sound = None
         type_fp = ASSET_DIR / "audio" / "collection" / "phobos_type_tick.wav"
@@ -832,8 +984,10 @@ class Game:
         self.story_winner = None
         self.phobos_route = False
         self.guardians_route = False
+        self.guardians_gone_this_run = False
         self.horror_piece_mode = False
         self.phobos_room = False
+        self.phobos_room_layout = random.choice(("table", "podium"))
         self.phobos_room_stage = "idle"
         self.phobos_room_tick = 0
         self.phobos_room_last_voice = 0
@@ -891,6 +1045,7 @@ class Game:
         self.meta_video_tick = 0
         self.meta_video_last_index = -1
         self.meta_video_surface = None
+        self.meta_video_music_state = None
         self.last_layout = None
         self.layout_reaction_done = False
         self.next_kind = self.random_piece()
@@ -1051,15 +1206,18 @@ class Game:
     def fall_interval(self):
         # Automatic Tetris gravity. Restored in v6.34 after the v6.33 hotfix
         # accidentally dropped this method while update()/HUD still called it.
-        if self.lines < 25: return 32
-        if self.lines < 50: return 28
-        if self.lines < 75: return 24
-        if self.lines < 100: return 20
-        if self.lines < 125: return 17
-        if self.lines < 150: return 14
-        if self.lines < 175: return 11
-        if self.lines < 200: return 9
-        return max(3, 8 - (self.lines - 200) // 50)
+        # Each START SPEED step is equivalent to 25 speed-lines, while the
+        # actual story/score line counter remains untouched.
+        speed_lines = self.lines + (max(1, min(5, self.start_speed)) - 1) * 25
+        if speed_lines < 25: return 32
+        if speed_lines < 50: return 28
+        if speed_lines < 75: return 24
+        if speed_lines < 100: return 20
+        if speed_lines < 125: return 17
+        if speed_lines < 150: return 14
+        if speed_lines < 175: return 11
+        if speed_lines < 200: return 9
+        return max(3, 8 - (speed_lines - 200) // 50)
 
     def play_voice(self, name, force=False):
         # v6.33 hard safety: the spoken line “Заклинание Фобоса рушится” is forbidden everywhere.
@@ -1091,10 +1249,13 @@ class Game:
         # Once the Guardians win, Phobos is completely gone from gameplay audio,
         # including queued/"external" lines and pause reactions.
         try:
-            is_phobos = (VOICE_DIR / "phobos") in path.parents
+            is_phobos = VOICE_DIR in path.parents or path.parent == VOICE_DIR
+            is_guardian = (VOICE_DIR.parent / "guardians") in path.parents
         except Exception:
-            is_phobos = False
+            is_phobos = is_guardian = False
         if self.guardians_route and is_phobos:
+            return False
+        if self.guardians_gone_this_run and is_guardian:
             return False
         if not self.voice_channel or (self.voice_cooldown > 0 and not force) or not path.exists():
             return False
@@ -1111,6 +1272,8 @@ class Game:
 
     def play_voice_if_idle(self, name):
         """Play a hint despite the long global cooldown, but never interrupt speech already playing."""
+        if self.guardians_route:
+            return False
         if not self.voice_channel or self.voice_channel.get_busy():
             return False
         path = self.voice_paths.get(name)
@@ -1128,10 +1291,13 @@ class Game:
 
     def queue_external_voice(self, path, delay_frames=0):
         try:
-            is_phobos = (VOICE_DIR / "phobos") in path.parents
+            is_phobos = VOICE_DIR in path.parents or path.parent == VOICE_DIR
+            is_guardian = (VOICE_DIR.parent / "guardians") in path.parents
         except Exception:
-            is_phobos = False
+            is_phobos = is_guardian = False
         if self.guardians_route and is_phobos:
+            return
+        if self.guardians_gone_this_run and is_guardian:
             return
         self.queued_voice = path
         self.queued_voice_delay = max(0, delay_frames)
@@ -1157,6 +1323,8 @@ class Game:
 
     def maybe_character_voice(self, kind):
         """Rare character-addressed spawn reactions. Each concrete spawn line can fire once per game."""
+        if self.guardians_gone_this_run:
+            return
         if not self.character_enabled.get(kind, True): return
         if self.voice_cooldown > 0:
             return
@@ -1411,7 +1579,8 @@ class Game:
             self.winner_choice = 0
             self.music.pause()
         elif self.phobos_route and self.lines >= 300 and 300 not in self.story_seen:
-            self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0; self.music.pause()
+            self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0
+            self.phobos_room_layout=random.choice(("table","podium")); self.music.pause()
         elif self.phase_index() != old_phase:
             self.music.set_phase(self.phase_index(), force=True)
         self.last_clear_kind = None
@@ -1430,6 +1599,17 @@ class Game:
         return self.mode == "game" and self.story_overlay == 200 and self.story200_stage == "choice"
 
     def begin_meta_video(self, name, after):
+        self.meta_video_music_state = {
+            "phase": self.music.phase,
+            "paused": self.music.paused,
+            "enabled": self.music.enabled,
+        }
+        # MATRIX/PORN audio must own the output completely. Pausing was not
+        # reliable on every mixer backend, so stop the background stream.
+        self.music.enter_special()
+        for channel in (self.voice_channel, self.menu_voice_channel, self.vtd_channel):
+            if channel:
+                channel.stop()
         info = self.meta_video_manifest.get(name)
         if not info:
             # No prepared video: still follow the route instead of falling back to the normal secret effect.
@@ -1442,7 +1622,6 @@ class Game:
         self.meta_video_started_ms = pygame.time.get_ticks()
         self.meta_video_last_index = -1
         self.meta_video_surface = None
-        self.music.pause()
         if self.meta_video_channel:
             audio = META_VIDEO_DIR / info.get("audio", "")
             if audio.exists():
@@ -1454,6 +1633,7 @@ class Game:
 
     def finish_meta_video(self):
         after = self.meta_video_after
+        previous_music = self.meta_video_music_state or {}
         if self.meta_video_channel:
             self.meta_video_channel.stop()
         self.meta_video_name = None
@@ -1461,16 +1641,28 @@ class Game:
         self.meta_video_tick = 0
         self.meta_video_last_index = -1
         self.meta_video_surface = None
+        self.meta_video_music_state = None
         if after == "matrix_menu":
             self.story_overlay = None
             self.mode = "menu"
             self.music.set_phase(-1, force=True)
+            self.music.leave_special(restart=True)
         elif after == "porn_confirm":
             self.story_overlay = 200
             self.story200_stage = "porn_confirm"
             self.story200_tick = 0
+            self.music.phase = previous_music.get("phase", self.music.phase)
+            self.music.enabled = previous_music.get("enabled", self.music.enabled)
+            if previous_music.get("paused", False):
+                self.music.leave_special(restart=False)
+                self.music.paused = True
+            else:
+                self.music.leave_special(restart=True)
         else:
-            self.music.resume()
+            self.music.phase = previous_music.get("phase", self.music.phase)
+            self.music.enabled = previous_music.get("enabled", self.music.enabled)
+            self.music.leave_special(restart=not previous_music.get("paused", False))
+            self.music.paused = bool(previous_music.get("paused", False))
 
     def start_story200_secret(self, action):
         # Codes on the winner-choice screen are alternate endings, NOT the ordinary in-game cheats.
@@ -1701,7 +1893,8 @@ class Game:
             self.winner_choice = 0
             self.music.pause()
         elif self.phobos_route and self.lines >= 300 and 300 not in self.story_seen:
-            self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0; self.music.pause()
+            self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0
+            self.phobos_room_layout=random.choice(("table","podium")); self.music.pause()
         elif self.phase_index() != old_phase:
             self.music.set_phase(self.phase_index(), force=True)
 
@@ -2337,6 +2530,8 @@ class Game:
                 self.vtd_active = False
                 self.vtd_intro_timer = 0
                 self.music.leave_special(restart=True)
+            if self.mode in ("menu","records","settings","collection") and not self.vtd_active and not self.collection_audio_item:
+                self.music.update()
             return
         if self.mode == "game" and self.paused and self.pause_voice_pending is not None:
             if self.pause_voice_delay > 0:
@@ -2449,6 +2644,7 @@ class Game:
         if self.phobos_route and self.lines >= 300 and 300 not in self.story_seen:
             self.story_seen.add(300)
             self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0
+            self.phobos_room_layout=random.choice(("table","podium"))
             self.phobos_room_chain=None; self.phobos_room_next_ms=pygame.time.get_ticks()+3000
             self.phobos_room_key_count=0; self.phobos_room_key_suppressed=False
             self.music.pause()
@@ -2650,6 +2846,7 @@ class Game:
             self.session_has_victory = True
             self.consecutive_game_overs = 0
             self.horror_piece_mode = False
+            self.guardians_gone_this_run = False
             # Guardians victory also returns the entire stack to classic sprite-free Tetris blocks.
             for row in self.board:
                 for cell in row:
@@ -2669,6 +2866,7 @@ class Game:
             # 80% horror set, 20% ordinary. If a future horror sprite pack is absent,
             # rendering safely falls back to the ordinary exact tetromino art.
             self.horror_piece_mode = random.random() < 0.80
+            self.guardians_gone_this_run = not self.horror_piece_mode
             # The 20% vanilla branch first shows the Guardians being split out
             # of the character art; then gameplay continues with sprite-free blocks.
             if not self.horror_piece_mode:
@@ -2719,10 +2917,12 @@ class Game:
                 self.draw_wrapped_center("СВЯЗИ ЗАКЛИНАНИЯ ОБОРВАНЫ.",500,760,self.font,(250,220,255))
             return
         if self.story200_stage == "cinematic_phobos":
-            src=getattr(self,"story200_assets",{}).get("phobos_action_sheet") or self.story100_assets.get("phobos_action")
-            if src:
-                frame=self.sprite_sheet_frame(src,4,3,min(11,self.story200_tick//7))
+            frames=getattr(self,"story200_action_frames",[])
+            if frames:
+                frame=frames[min(len(frames)-1,self.story200_tick//7)]
                 self.draw_story100_sprite(frame,(WINDOW_W//2,430),760,3)
+            elif self.story100_assets.get("phobos_action"):
+                self.draw_story100_sprite(self.story100_assets["phobos_action"],(WINDOW_W//2,430),760,3)
             self.draw_wrapped_center("НЕТ... ВЫ НЕ МОЖЕТЕ ОСВОБОДИТЬСЯ!",840,780,self.font,(255,185,210))
             if self.story200_tick%17<5:
                 flash=pygame.Surface((WINDOW_W,WINDOW_H),pygame.SRCALPHA); flash.fill((210,150,255,75)); self.canvas.blit(flash,(0,0))
@@ -2824,23 +3024,43 @@ class Game:
             sub=self.small.render("PHOBOS.EXE HAS TAKEN CONTROL",True,COLORS["text"]); self.canvas.blit(sub,sub.get_rect(center=(WINDOW_W//2,500)))
             return
         if self.phobos_room_stage == "blackout": self.canvas.fill((0,0,0)); return
+        room_source=None
         if self.phobos_room_bg_frames:
             # Slow smoke/city cycling; lightning frame is deliberately rare.
             sec=self.phobos_room_tick/max(1,FPS)
             if int(sec)%47==0 and (self.phobos_room_tick%FPS)<10 and len(self.phobos_room_bg_frames)>2: bi=2
             else: bi=(int(sec//8)%2) if len(self.phobos_room_bg_frames)>1 else 0
-            self.blit_cover(self.phobos_room_bg_frames[bi],pygame.Rect(0,0,WINDOW_W,WINDOW_H))
-        elif self.phobos_room_bg: self.blit_cover(self.phobos_room_bg,pygame.Rect(0,0,WINDOW_W,WINDOW_H))
-        else: self.canvas.fill((12,4,8))
+            room_source=self.phobos_room_bg_frames[bi]
+        elif self.phobos_room_bg:
+            room_source=self.phobos_room_bg
+        if room_source:
+            iw,ih=room_source.get_size(); scale=max(WINDOW_W/iw,WINDOW_H/ih)
+            scaled=pygame.transform.smoothscale(room_source,(max(1,int(iw*scale)),max(1,int(ih*scale))))
+            crop=pygame.Rect((scaled.get_width()-WINDOW_W)//2,(scaled.get_height()-WINDOW_H)//2,WINDOW_W,WINDOW_H)
+            room_render=scaled.subsurface(crop).copy(); self.canvas.blit(room_render,(0,0))
+        else:
+            room_render=None; self.canvas.fill((12,4,8))
+        layout=getattr(self,"phobos_room_layout","table")
+        if layout=="podium":
+            # Remove the built-in table so table and podium never overlap.
+            if room_render:
+                floor=room_render.subsurface(pygame.Rect(0,760,min(180,WINDOW_W),WINDOW_H-760)).copy()
+                floor=pygame.transform.smoothscale(floor,(WINDOW_W,WINDOW_H-760)); self.canvas.blit(floor,(0,760))
+            else:
+                pygame.draw.rect(self.canvas,(35,16,17),(0,760,WINDOW_W,WINDOW_H-760))
         shade=pygame.Surface((WINDOW_W,WINDOW_H),pygame.SRCALPHA); shade.fill((0,0,0,35)); self.canvas.blit(shade,(0,0))
         if self.phobos_room_emotions:
             src=self.phobos_room_emotions[self.phobos_room_emotion % len(self.phobos_room_emotions)]
-            h=500; w=max(1,int(src.get_width()*h/src.get_height())); img=pygame.transform.smoothscale(src,(w,h))
-            self.canvas.blit(img,img.get_rect(midbottom=(WINDOW_W//2,900)))
-        # Foreground table deliberately occludes Phobos's lower body: room -> Phobos -> table -> dialogue UI.
-        if self.phobos_room_table:
+            h=620 if layout=="podium" else 565; w=max(1,int(src.get_width()*h/src.get_height())); img=pygame.transform.smoothscale(src,(w,h))
+            self.canvas.blit(img,img.get_rect(midbottom=(WINDOW_W//2,925 if layout=="podium" else 950)))
+        if layout=="table" and room_render:
+            # The table belongs to the background. Repaint its foreground over
+            # Phobos so he is visibly seated behind it rather than hidden inside it.
+            self.canvas.blit(room_render,(0,830),pygame.Rect(0,830,WINDOW_W,WINDOW_H-830))
+        # The alternative layout uses the supplied gothic podium and no table.
+        if layout=="podium" and self.phobos_room_table:
             src=self.phobos_room_table; th=720; tw=max(1,int(src.get_width()*th/src.get_height())); table=pygame.transform.smoothscale(src,(tw,th))
-            self.canvas.blit(table,table.get_rect(midtop=(WINDOW_W//2,535)))
+            self.canvas.blit(table,table.get_rect(midtop=(WINDOW_W//2,555)))
         text=self.current_phobos_room_text()
         if text:
             box=pygame.Surface((WINDOW_W-70,180),pygame.SRCALPHA); box.fill((5,2,9,220)); pygame.draw.rect(box,(105,45,125,255),box.get_rect(),3)
@@ -3022,7 +3242,10 @@ class Game:
             fp = LINES100_DIR / name
             if fp.exists():
                 try:
-                    self.story100_assets[key] = pygame.image.load(str(fp)).convert_alpha()
+                    if key.endswith("_mask"):
+                        self.story100_assets[key] = pygame.image.load(str(fp)).convert_alpha()
+                    else:
+                        self.story100_assets[key] = load_clean_alpha(fp)
                 except pygame.error:
                     pass
         # v6.22 third-cutscene source sheets supplied earlier by the user.
@@ -3032,6 +3255,17 @@ class Game:
             if fp.exists():
                 try: self.story200_assets[key]=pygame.image.load(str(fp)).convert_alpha()
                 except pygame.error: pass
+        self.story200_action_frames=[]
+        action_frames_dir=ASSET_DIR / "cutscenes" / "lines200" / "phobos_action_frames"
+        for fp in sorted(action_frames_dir.glob("frame_*.png")):
+            try: self.story200_action_frames.append(load_clean_alpha(fp))
+            except pygame.error: pass
+        if not self.story200_action_frames and self.story200_assets.get("phobos_action_sheet"):
+            sheet=self.story200_assets["phobos_action_sheet"]
+            for x,y,w,h in PHOBOS_ACTION_RECTS:
+                rect=pygame.Rect(x,y,w,h).clip(sheet.get_rect())
+                if rect.width and rect.height:
+                    self.story200_action_frames.append(clean_alpha_surface(sheet.subsurface(rect).copy(), 24))
         self.story200_collapse_frames=[]
         for fp in sorted((ASSET_DIR / "cutscenes" / "lines200" / "phobos_collapse_frames").glob("frame_*.png")):
             try: self.story200_collapse_frames.append(pygame.image.load(str(fp)).convert_alpha())
@@ -3658,15 +3892,31 @@ class Game:
         self.music.set_phase(-1, force=True)
 
     def gallery_for(self, category):
+        self.collection_gallery_parent=self.collection_page
         roots=[]
-        if category=="ACTION POSES": roots=[LINES100_DIR, ASSET_DIR/"cutscenes"/"lines200"]
+        if category=="ACTION POSES":
+            files=[
+                LINES100_DIR/"will_action.png",
+                ASSET_DIR/"minigames"/"irma_face.png",
+                LINES100_DIR/"taranee_action.png",
+                LINES100_DIR/"cornelia_action.png",
+                LINES100_DIR/"haylin_action.png",
+                LINES100_DIR/"caleb_action.png",
+                ASSET_DIR/"minigames"/"blunk_face.png",
+                LINES100_DIR/"phobos_action.png",
+            ]
+            files=[fp for fp in files if fp.exists()]
         elif category=="TRANSFORMATIONS": roots=[self.intro_processed_dir]
-        elif category=="HORROR TETROMINOES": roots=[ASSET_DIR/"sprites"/"horror"]
+        elif category=="HORROR TETROMINOES":
+            root=ASSET_DIR/"sprites"/"horror"
+            files=[root/f"{kind}_rotation_0.png" for kind in ("I","O","T","S","Z","J","L")]
+            files=[fp for fp in files if fp.exists()]
         elif category=="PHOBOS ROOM STATES": roots=[PHOBOS_ROOM_DIR/"states"]
         elif category=="MERIDIAN WINDOWS": roots=[PHOBOS_ROOM_DIR]
         elif category=="FAILED / UNUSED ART": roots=[ASSET_DIR/"sprites"/"horror_sources"]
-        elif category=="SCREENSHOTS": roots=[ASSET_DIR/"secrets"/"porn"]
-        files=[]
+        elif category=="SCREENSHOTS": roots=[ASSET_DIR/"development"/"screenshots"]
+        if category not in ("ACTION POSES","HORROR TETROMINOES"):
+            files=[]
         for root in roots:
             if root.exists():
                 for fp in sorted(root.rglob('*')):
@@ -3680,7 +3930,7 @@ class Game:
     def collection_current_items(self):
         if self.collection_page == "CUTSCENES": return ["INTRO / OPENING", "100 LINES — RESISTANCE", "200 LINES — CINEMATIC", "PHOBOS ROOM", "BACK"]
         if self.collection_page == "MINIGAMES": return self.minigame_names + ["BACK"]
-        if self.collection_page == "AUDIO": return ["INTRO MUSIC", "PHOBOS ROOM — DARK THEME", "PHOBOS STAGE 3 — TRACK 1", "PHOBOS STAGE 3 — TRACK 2", "PHASE 2 — TRACK 1", "PHASE 2 — TRACK 2", "PHASE 2 — TRACK 3", "WITCH ENDING", "MINIGAMES MUSIC 1", "MINIGAMES MUSIC 2", "VTD — TRACK 1", "VTD — TRACK 2", "STOP", "BACK"]
+        if self.collection_page == "AUDIO": return ["INTRO MUSIC", "PHOBOS 0–99 — ARROGANT PRINCE", "PHOBOS ROOM — DARK THEME", "PHOBOS 200+ — MAIN THEME", "PHASE 2 — TRACK 1", "PHASE 2 — TRACK 2", "PHASE 2 — TRACK 3", "WITCH ENDING", "MINIGAMES MUSIC 1", "MINIGAMES MUSIC 2", "VTD — TRACK 1", "VTD — TRACK 2", "STOP", "BACK"]
         if self.collection_page == "ART & SPRITES": return ["ACTION POSES", "HORROR TETROMINOES", "PHOBOS ROOM STATES", "MERIDIAN WINDOWS", "BACK"]
         if self.collection_page == "DEVELOPMENT ARCHIVE": return ["FAILED / UNUSED ART", "SCREENSHOTS", "FACTS & NOTES", "BACK"]
         if self.collection_page == "GALLERY": return [fp.name for fp in self.collection_gallery_files] + ["BACK"]
@@ -3697,7 +3947,7 @@ class Game:
         items=self.collection_current_items(); item=items[self.collection_item_index]
         if item=="BACK":
             if self.collection_page=="root": self.mode="menu"
-            elif self.collection_page=="GALLERY": self.collection_page="ART & SPRITES"; self.collection_item_index=0
+            elif self.collection_page=="GALLERY": self.collection_page=self.collection_gallery_parent; self.collection_item_index=0
             else: self.collection_page="root"; self.collection_item_index=0
             return
         if self.collection_page=="root": self.collection_page=item; self.collection_item_index=0; return
@@ -3711,7 +3961,7 @@ class Game:
             elif item.startswith("200"):
                 self.start_new_game(); self.collection_cutscene=True; self.lines=200; self.story_seen.add(200); self.story_overlay=200; self.story200_stage="cinematic_reverse"; self.story200_tick=0; self.winner_choice=0; self.music.pause()
             elif item.startswith("PHOBOS ROOM"):
-                self.start_new_game(); self.collection_cutscene=True; self.phobos_route=True; self.lines=300; self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0; self.music.pause()
+                self.start_new_game(); self.collection_cutscene=True; self.phobos_route=True; self.lines=300; self.story_seen.add(300); self.story_overlay=300; self.phobos_room=True; self.phobos_room_stage="crash"; self.phobos_room_tick=0; self.phobos_room_layout=random.choice(("table","podium")); self.music.pause()
             return
         if self.collection_page=="AUDIO": self.play_collection_audio(item); return
         if self.collection_page=="ART & SPRITES": self.gallery_for(item); return
@@ -3725,7 +3975,7 @@ class Game:
         elif key==pygame.K_DOWN: self.collection_item_index=(self.collection_item_index+1)%len(items)
         elif key==pygame.K_ESCAPE:
             if self.collection_page=="root": self.mode="menu"
-            elif self.collection_page=="GALLERY": self.collection_page="ART & SPRITES"; self.collection_item_index=0
+            elif self.collection_page=="GALLERY": self.collection_page=self.collection_gallery_parent; self.collection_item_index=0
             else: self.collection_page="root"; self.collection_item_index=0
         elif key in (pygame.K_RETURN,pygame.K_SPACE): self.collection_activate()
 
@@ -3733,7 +3983,7 @@ class Game:
         if item=="STOP":
             if pygame.mixer.get_init(): pygame.mixer.music.stop()
             self.collection_audio_item=None; return
-        mapping={"INTRO MUSIC":ASSET_DIR/"audio"/"collection"/"intro_music.mp3","MINIGAMES MUSIC 1":ASSET_DIR/"audio"/"collection"/"minigames_1.mp3","MINIGAMES MUSIC 2":ASSET_DIR/"audio"/"collection"/"minigames_2.mp3","PHASE 2 — TRACK 1":ASSET_DIR/"audio"/"collection"/"phase2_1.mp3","PHASE 2 — TRACK 2":ASSET_DIR/"audio"/"collection"/"phase2_2.mp3","PHASE 2 — TRACK 3":ASSET_DIR/"audio"/"collection"/"phase2_3.mp3","WITCH ENDING":ASSET_DIR/"audio"/"collection"/"witch_ending.mp3","PHOBOS ROOM — DARK THEME":ASSET_DIR/"audio"/"music"/"phobos_room"/"PhobosthemeDark.mp3","PHOBOS STAGE 3 — TRACK 1":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_theme_1.mp3","PHOBOS STAGE 3 — TRACK 2":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_main_theme_3_phase.mp3","VTD — TRACK 1":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_01.mp3","VTD — TRACK 2":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_02.mp3"}
+        mapping={"INTRO MUSIC":ASSET_DIR/"audio"/"collection"/"intro_music.mp3","MINIGAMES MUSIC 1":ASSET_DIR/"audio"/"collection"/"minigames_1.mp3","MINIGAMES MUSIC 2":ASSET_DIR/"audio"/"collection"/"minigames_2.mp3","PHASE 2 — TRACK 1":ASSET_DIR/"audio"/"collection"/"phase2_1.mp3","PHASE 2 — TRACK 2":ASSET_DIR/"audio"/"collection"/"phase2_2.mp3","PHASE 2 — TRACK 3":ASSET_DIR/"audio"/"collection"/"phase2_3.mp3","WITCH ENDING":ASSET_DIR/"audio"/"collection"/"witch_ending.mp3","PHOBOS 0–99 — ARROGANT PRINCE":ASSET_DIR/"audio"/"music"/"phase_0_99_phobos"/"Arrogant_Prince_of_the_Obsidian_Court.mp3","PHOBOS ROOM — DARK THEME":ASSET_DIR/"audio"/"music"/"phobos_room"/"PhobosthemeDark.mp3","PHOBOS 200+ — MAIN THEME":ASSET_DIR/"audio"/"music"/"phobos_route"/"Phobos_main_theme_3_phase.mp3","VTD — TRACK 1":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_01.mp3","VTD — TRACK 2":ASSET_DIR/"audio"/"music"/"secrets"/"vtd"/"vtd_02.mp3"}
         fp=mapping.get(item,Path("__missing__"))
         if not (fp.exists() and pygame.mixer.get_init()): return
         if self.collection_audio_item==item and pygame.mixer.music.get_busy():
@@ -3789,11 +4039,13 @@ class Game:
             print(f"[minigame music] {exc}")
 
     def start_minigame(self,name):
+        pygame.mouse.set_visible(False)
         self.mode="minigame"; self.minigame=name; self.mg_score=0; self.mg_tick=0; self.mg_over=False; self.mg_gameover_reason=""
         self.mg_lives=1 if "SNAKE" in name else 3; self.mg_max_lives=self.mg_lives; self.mg_combo=0; self.mg_wave=1; self.mg_level=1; self.mg_objects=[]; self.mg_obstacles=[]
         # Centered safe arena: every minigame mechanic and sprite stays inside this visible playfield.
         self.mg_arena=pygame.Rect(70,145,WINDOW_W-140,760)
         self.mg_player=[500.0,620.0]; self.mg_vel=[0.0,0.0]; self.mg_jump=0.0; self.mg_ground=790
+        self.mg_duck_timer=0
         if name=="CALEB RUNNER": self.mg_player=[160.0,790.0]
         if name in ("TARANEE FIRE SHOT","CORNELIA EARTH GARDEN","BLUNK WASHING","IRMA BUBBLE TROUBLE"): self.mg_player=[500.0,805.0]
         self.mg_dir=(1,0); self.mg_next_dir=(1,0)
@@ -3801,43 +4053,55 @@ class Game:
         # 50% Blunk, 25% Cedric, 25% Phobos.
         self.mg_snake_variant=random.choices((0,1,2),weights=(50,25,25),k=1)[0]
         self.mg_ball=[500.0,650.0,5.2,-6.2]; self.mg_paddle_x=500.0; self.mg_paddle_w=170
-        self.mg_bricks=[[x,y] for y in range(5) for x in range(12)]
-        self.mg_invaders=[[150+x*62,185+y*48] for y in range(4) for x in range(11)]; self.mg_enemy_dir=1; self.mg_enemy_shots=[]
+        arena_tuple=(self.mg_arena.left,self.mg_arena.top,self.mg_arena.width,self.mg_arena.height)
+        self.mg_bricks=heart_brick_layout(arena_tuple,self.mg_wave)
+        self.mg_invaders=taranee_invader_layout(arena_tuple,self.mg_wave); self.mg_enemy_dir=1; self.mg_enemy_shots=[]
         self.mg_bubbles=[[340.0,300.0,3.1,-5.7,48],[660.0,240.0,-3.3,-5.1,48]]
         self.mg_notes=[]; self.mg_whirl_angle=0.0; self.mg_whirl_mode="PULL"
         self.mg_corruption=0.0
         self.mg_t_board=[[None for _ in range(10)] for _ in range(18)]
         self.mg_t_kind=random.choice(list(PIECES)); self.mg_t_rot=0; self.mg_t_x=3; self.mg_t_y=0
         self.mg_t_next=random.choice(list(PIECES)); self.mg_t_drop=0
-        self.mg_maze_w=25; self.mg_maze_h=19; self.mg_maze_cell=34; self.mg_maze_origin=(75,190)
-        # A simple but fully collision-based Pac-Man style maze. Every barrier has deliberate gaps.
-        walls=set()
-        W,H=self.mg_maze_w,self.mg_maze_h
-        for x in range(W): walls.add((x,0)); walls.add((x,H-1))
-        for y in range(H): walls.add((0,y)); walls.add((W-1,y))
-        for y in (4,9,14):
-            for x in range(2,W-2):
-                if x not in (5,6,12,18,19): walls.add((x,y))
-        for x in (6,12,18):
-            for y in range(2,H-2):
-                if y not in (3,7,8,12,16): walls.add((x,y))
-        # ghost house shell: clear the interior first so old corridor walls do not cross it.
-        for x in range(10,15):
-            for y in range(8,12): walls.discard((x,y))
-        for x in range(10,15): walls.add((x,8)); walls.add((x,11))
-        for y in range(8,12): walls.add((10,y)); walls.add((14,y))
-        walls.discard((12,8)); walls.discard((12,11))
-        self.mg_maze_walls=walls
-        self.mg_maze_player=[2,2]; self.mg_maze_dir=(1,0); self.mg_maze_next=(1,0)
-        self.mg_maze_ghosts=[[12,9,0],[11,10,1],[13,10,2],[12,10,3]]
-        self.mg_maze_home=[(12,9),(11,10),(13,10),(12,10)]
-        self.mg_fright=0
-        self.mg_pellets={(x,y) for y in range(1,H-1) for x in range(1,W-1) if (x,y) not in walls and not (10<=x<=14 and 8<=y<=11)}
-        self.mg_power={(1,1),(W-2,1),(1,H-2),(W-2,H-2)}
-        self.mg_pellets -= self.mg_power
+        self.mg_maze_w,self.mg_maze_h,self.mg_maze_tunnel_y,self.mg_maze_walls=build_will_maze()
+        self.mg_maze_cell=22; self.mg_maze_origin=(122,166)
+        self.mg_maze_player=[13,23]; self.mg_maze_dir=(-1,0); self.mg_maze_next=(-1,0)
+        homes=((13,15),(14,15),(12,16),(15,16))
+        release_frames=(0,FPS*4,FPS*9,FPS*15)
+        self.mg_maze_ghosts=[]
+        for kind,(gx,gy) in enumerate(homes):
+            self.mg_maze_ghosts.append({"x":gx,"y":gy,"kind":kind,"home":(gx,gy),
+                                        "dir":(-1,0),"state":"active" if kind==0 else "house",
+                                        "release":release_frames[kind]})
+        self.mg_maze_house={(x,y) for y in range(14,18) for x in range(12,16)}
+        self.mg_fright=0; self.mg_fright_chain=0
+        self.reset_will_maze_wave()
         self.play_minigame_music(name)
 
+    def reset_will_maze_wave(self):
+        excluded=set(getattr(self,"mg_maze_house",set())) | {tuple(self.mg_maze_player)}
+        open_cells={(x,y) for y in range(self.mg_maze_h) for x in range(self.mg_maze_w)
+                    if (x,y) not in self.mg_maze_walls and (x,y) not in excluded}
+        corners=((1,1),(self.mg_maze_w-2,1),(1,self.mg_maze_h-2),(self.mg_maze_w-2,self.mg_maze_h-2))
+        self.mg_power={p for p in corners if p in open_cells}
+        self.mg_pellets=open_cells-self.mg_power
+
+    def caleb_player_rect(self, ducking=None):
+        if ducking is None:
+            ducking=self.mg_duck_timer>0 or pygame.key.get_pressed()[pygame.K_DOWN]
+        # The hitbox follows the animated vertical position. It used to stay
+        # nailed to the floor, making SPACE change velocity without producing
+        # either a visible or physical jump.
+        foot_y=int(self.mg_player[1]+25)
+        return pygame.Rect(116,foot_y-68,88,68) if ducking else pygame.Rect(122,foot_y-138,76,138)
+
+    def caleb_obstacle_rect(self, obstacle):
+        x=int(obstacle[0]); overhead=bool(obstacle[5])
+        if overhead:
+            return pygame.Rect(x,int(self.mg_ground+25-118),60,34)
+        return pygame.Rect(x,int(self.mg_ground+25-obstacle[3]),obstacle[2],obstacle[3])
+
     def leave_minigame(self):
+        pygame.mouse.set_visible(True)
         self.mode="collection"; self.collection_page="MINIGAMES"; self.collection_item_index=max(0,self.minigame_names.index(self.minigame))
         if pygame.mixer.get_init(): pygame.mixer.music.stop()
 
@@ -3871,7 +4135,7 @@ class Game:
             if key==pygame.K_SPACE: self.mg_vel[1]=-8.4
         elif name=="CALEB RUNNER":
             if key in (pygame.K_SPACE,pygame.K_UP) and self.mg_player[1]>=self.mg_ground-1: self.mg_vel[1]=-15.5
-            if key==pygame.K_DOWN: self.mg_jump=18
+            if key==pygame.K_DOWN: self.mg_duck_timer=18
         elif name=="HEART BREAKER":
             if key==pygame.K_LEFT: self.mg_paddle_x-=55
             elif key==pygame.K_RIGHT: self.mg_paddle_x+=55
@@ -3882,10 +4146,14 @@ class Game:
         elif name=="CORNELIA EARTH GARDEN":
             if key==pygame.K_LEFT: self.mg_player[0]-=45
             elif key==pygame.K_RIGHT: self.mg_player[0]+=45
+            elif key==pygame.K_UP: self.mg_player[1]-=38
+            elif key==pygame.K_DOWN: self.mg_player[1]+=38
             elif key==pygame.K_SPACE:
-                targets=[o for o in self.mg_objects if o[2]=="vine" and abs(o[0]-self.mg_player[0])<115]
+                targets=[o for o in self.mg_objects if o[2]=="vine" and
+                         (o[0]-self.mg_player[0])**2+(o[1]-self.mg_player[1])**2 < 145**2]
                 if targets:
-                    t=max(targets,key=lambda o:o[1]); self.mg_objects.remove(t); self.mg_score+=5; self.mg_corruption=max(0,self.mg_corruption-2.5)
+                    t=min(targets,key=lambda o:(o[0]-self.mg_player[0])**2+(o[1]-self.mg_player[1])**2)
+                    self.mg_objects.remove(t); self.mg_score+=5; self.mg_corruption=max(0,self.mg_corruption-2.5)
         elif name=="BLUNK WASHING":
             if key==pygame.K_LEFT: self.mg_player[0]-=48
             elif key==pygame.K_RIGHT: self.mg_player[0]+=48
@@ -3923,6 +4191,8 @@ class Game:
                 self.mg_t_drop=99
         arena=getattr(self,"mg_arena",pygame.Rect(70,145,WINDOW_W-140,760))
         self.mg_player[0]=max(arena.left+45,min(arena.right-45,self.mg_player[0]))
+        if name=="CORNELIA EARTH GARDEN":
+            self.mg_player[1]=max(arena.top+240,min(arena.bottom-55,self.mg_player[1]))
 
     def update_minigame(self):
         if self.mg_over: return
@@ -3934,6 +4204,10 @@ class Game:
             if name=="HEART BREAKER": self.mg_paddle_x += dx*9
             else: self.mg_player[0] += dx*8
             self.mg_player[0]=max(arena.left+45,min(arena.right-45,self.mg_player[0]))
+            if name=="CORNELIA EARTH GARDEN":
+                dy=(1 if keys[pygame.K_DOWN] else 0)-(1 if keys[pygame.K_UP] else 0)
+                self.mg_player[1]+=dy*7
+                self.mg_player[1]=max(arena.top+240,min(arena.bottom-55,self.mg_player[1]))
         if "SNAKE" in name:
             step=max(3,9-self.mg_level//2)
             if self.mg_tick%step==0:
@@ -3948,47 +4222,72 @@ class Game:
                 else: self.mg_snake.pop()
         elif name=="WILL MAZE":
             if self.mg_fright>0: self.mg_fright-=1
-            def open_cell(c):
-                x,y=c; return 0<=x<self.mg_maze_w and 0<=y<self.mg_maze_h and c not in self.mg_maze_walls
-            move_every=max(3,5-self.mg_level//5)
-            if self.mg_tick%move_every==0:
-                px,py=self.mg_maze_player
-                nd=self.mg_maze_next
-                if open_cell((px+nd[0],py+nd[1])): self.mg_maze_dir=nd
-                dx,dy=self.mg_maze_dir
-                if open_cell((px+dx,py+dy)): self.mg_maze_player=[px+dx,py+dy]
-                px,py=self.mg_maze_player
-                if (px,py) in self.mg_pellets: self.mg_pellets.remove((px,py)); self.mg_score+=1
-                if (px,py) in self.mg_power:
-                    self.mg_power.remove((px,py)); self.mg_score+=25; self.mg_fright=FPS*7
-                # Endless: clearing the board starts a denser/faster wave instead of winning.
+            elif self.mg_fright_chain: self.mg_fright_chain=0
+            # Slower, readable motion: Will still has a modest speed advantage.
+            if self.mg_tick%9==0:
+                current=tuple(self.mg_maze_player)
+                turn=will_maze_step(current,self.mg_maze_next,self.mg_maze_walls,self.mg_maze_w,self.mg_maze_h,self.mg_maze_tunnel_y)
+                if turn is not None: self.mg_maze_dir=self.mg_maze_next
+                dest=will_maze_step(current,self.mg_maze_dir,self.mg_maze_walls,self.mg_maze_w,self.mg_maze_h,self.mg_maze_tunnel_y)
+                if dest is not None: self.mg_maze_player=list(dest)
+                pos=tuple(self.mg_maze_player)
+                if pos in self.mg_pellets: self.mg_pellets.remove(pos); self.mg_score+=1
+                if pos in self.mg_power:
+                    self.mg_power.remove(pos); self.mg_score+=25; self.mg_fright=FPS*7; self.mg_fright_chain=0
                 if not self.mg_pellets and not self.mg_power:
-                    self.mg_wave+=1; self.mg_score+=100
-                    self.mg_pellets={(x,y) for y in range(1,self.mg_maze_h-1) for x in range(1,self.mg_maze_w-1) if (x,y) not in self.mg_maze_walls and not (10<=x<=14 and 8<=y<=11)}
-                    self.mg_power={(1,1),(self.mg_maze_w-2,1),(1,self.mg_maze_h-2),(self.mg_maze_w-2,self.mg_maze_h-2)}; self.mg_pellets-=self.mg_power
+                    self.mg_wave+=1; self.mg_score+=100; self.reset_will_maze_wave()
+
+            px,py=self.mg_maze_player
+            ghost_step=max(12,15-min(3,self.mg_wave//3))+(4 if self.mg_fright>0 else 0)
+            if self.mg_tick%ghost_step==0:
                 dirs=((1,0),(-1,0),(0,1),(0,-1))
-                for gi,g in enumerate(self.mg_maze_ghosts):
-                    gx,gy,kind=g
-                    # Distinct targets: hunter, interceptor, tactician, coward.
-                    if kind==0: target=(px,py)
+                scatter_targets=((self.mg_maze_w-2,1),(1,1),(self.mg_maze_w-2,self.mg_maze_h-2),(1,self.mg_maze_h-2))
+                scatter=(self.mg_tick//FPS)%27 < 7
+                for ghost in self.mg_maze_ghosts:
+                    kind=ghost["kind"]
+                    if ghost["state"]=="house" and self.mg_tick>=ghost["release"]:
+                        ghost.update({"x":13+kind%2,"y":12,"state":"active","dir":(-1 if kind%2 else 1,0)})
+                    gx,gy=ghost["x"],ghost["y"]
+                    if ghost["state"]=="house": continue
+                    if ghost["state"]=="eyes": target=ghost["home"]
+                    elif scatter: target=scatter_targets[kind]
+                    elif kind==0: target=(px,py)
                     elif kind==1: target=(px+self.mg_maze_dir[0]*4,py+self.mg_maze_dir[1]*4)
                     elif kind==2:
-                        hx,hy,_=self.mg_maze_ghosts[0]; target=(2*px-hx,2*py-hy)
-                    else: target=((1,self.mg_maze_h-2) if abs(gx-px)+abs(gy-py)<6 else (px,py))
-                    opts=[(gx+dx,gy+dy) for dx,dy in dirs if open_cell((gx+dx,gy+dy))]
-                    if opts:
-                        if self.mg_fright>0: dest=max(opts,key=lambda c:abs(c[0]-px)+abs(c[1]-py)+random.random()*.8)
-                        else: dest=min(opts,key=lambda c:abs(c[0]-target[0])+abs(c[1]-target[1])+random.random()*.35)
-                        g[0],g[1]=dest
-                    if (g[0],g[1])==(px,py):
-                        if self.mg_fright>0:
-                            self.mg_score+=200*(2**min(3,gi)); g[0],g[1]=self.mg_maze_home[gi]
-                        else:
-                            self.mg_lives-=1
-                            if self.mg_lives<=0: self.minigame_game_over("WILL WAS CAUGHT"); return
-                            self.mg_maze_player=[2,2]; self.mg_maze_dir=(1,0); self.mg_maze_next=(1,0)
-                            for j,gg in enumerate(self.mg_maze_ghosts): gg[0],gg[1]=self.mg_maze_home[j]
-                            return
+                        lead=self.mg_maze_ghosts[0]; target=(2*px-lead["x"],2*py-lead["y"])
+                    else: target=scatter_targets[kind] if abs(gx-px)+abs(gy-py)<7 else (px,py)
+                    candidates=[]
+                    for direction in dirs:
+                        cell=will_maze_step((gx,gy),direction,self.mg_maze_walls,self.mg_maze_w,self.mg_maze_h,self.mg_maze_tunnel_y)
+                        if cell is None: continue
+                        if ghost["state"]=="active" and (gx,gy) not in self.mg_maze_house and cell in self.mg_maze_house: continue
+                        candidates.append((cell,direction))
+                    if not candidates: continue
+                    reverse=(-ghost["dir"][0],-ghost["dir"][1])
+                    forward=[item for item in candidates if item[1]!=reverse]
+                    if forward: candidates=forward
+                    if self.mg_fright>0 and ghost["state"]=="active":
+                        cell,direction=max(candidates,key=lambda item:abs(item[0][0]-px)+abs(item[0][1]-py)+random.random())
+                    else:
+                        cell,direction=min(candidates,key=lambda item:abs(item[0][0]-target[0])+abs(item[0][1]-target[1])+random.random()*.2)
+                    ghost["x"],ghost["y"]=cell; ghost["dir"]=direction
+                    if ghost["state"]=="eyes" and cell==ghost["home"]:
+                        ghost["state"]="house"; ghost["release"]=self.mg_tick+FPS*2
+
+            # Collision is checked after either side moves.
+            px,py=self.mg_maze_player
+            for ghost in self.mg_maze_ghosts:
+                if (ghost["x"],ghost["y"])!=(px,py) or ghost["state"] in ("eyes","house"): continue
+                if self.mg_fright>0:
+                    self.mg_score+=200*(2**min(3,self.mg_fright_chain)); self.mg_fright_chain+=1; ghost["state"]="eyes"
+                else:
+                    self.mg_lives-=1
+                    if self.mg_lives<=0: self.minigame_game_over("WILL WAS CAUGHT"); return
+                    self.mg_maze_player=[13,23]; self.mg_maze_dir=(-1,0); self.mg_maze_next=(-1,0)
+                    releases=(0,FPS*4,FPS*9,FPS*15)
+                    for g in self.mg_maze_ghosts:
+                        g["x"],g["y"]=g["home"]; g["state"]="active" if g["kind"]==0 else "house"; g["release"]=self.mg_tick+releases[g["kind"]]
+                    return
         elif name=="HAY LIN FLIGHT":
             speed=6.0+min(7.0,self.mg_tick/800.0); self.mg_vel[1]+=.46; self.mg_player[1]+=self.mg_vel[1]
             if self.mg_player[1]<145 or self.mg_player[1]>850: self.minigame_game_over("HAY LIN FELL"); return
@@ -4005,15 +4304,18 @@ class Game:
         elif name=="CALEB RUNNER":
             speed=9+min(9,self.mg_tick//650); self.mg_vel[1]+=.78; self.mg_player[1]+=self.mg_vel[1]
             if self.mg_player[1]>=self.mg_ground: self.mg_player[1]=self.mg_ground; self.mg_vel[1]=0
+            if self.mg_duck_timer>0: self.mg_duck_timer-=1
             spawn=max(42,82-self.mg_level*3)
-            if self.mg_tick%spawn==0: self.mg_obstacles.append([arena.right-50,self.mg_ground,random.choice((35,50,70)),False, random.random()<0.28])
+            if self.mg_tick%spawn==0:
+                overhead=random.random()<0.28
+                height=34 if overhead else random.choice((38,52,70))
+                self.mg_obstacles.append([float(arena.right-60),self.mg_ground,50,height,False,overhead])
             for o in self.mg_obstacles[:]:
                 o[0]-=speed
-                ducking=pygame.key.get_pressed()[pygame.K_DOWN]
-                overhead = len(o)>4 and o[4]
-                hit = abs(o[0]-160)<35 and ((overhead and not ducking and self.mg_player[1]>=self.mg_ground-1) or (not overhead and self.mg_player[1]>self.mg_ground-o[2]-18))
-                if hit: self.minigame_game_over("CALEB HIT AN OBSTACLE"); return
-                if o[0]<160 and not o[3]: o[3]=True; self.mg_score+=1
+                ducking=self.mg_duck_timer>0 or keys[pygame.K_DOWN]
+                if self.caleb_player_rect(ducking).colliderect(self.caleb_obstacle_rect(o)):
+                    self.minigame_game_over("CALEB HIT AN OBSTACLE"); return
+                if o[0]+o[2]<116 and not o[4]: o[4]=True; self.mg_score+=1
                 if o[0]<arena.left: self.mg_obstacles.remove(o)
         elif name=="HEART BREAKER":
             self.mg_paddle_w=max(88,170-self.mg_level*7); self.mg_paddle_x=max(arena.left+12+self.mg_paddle_w/2,min(arena.right-12-self.mg_paddle_w/2,self.mg_paddle_x))
@@ -4023,11 +4325,13 @@ class Game:
             if 795<b[1]<830 and abs(b[0]-self.mg_paddle_x)<self.mg_paddle_w/2+8 and b[3]>0:
                 rel=(b[0]-self.mg_paddle_x)/(self.mg_paddle_w/2); speed=min(12.5,(b[2]**2+b[3]**2)**.5+0.18); b[2]=max(-10,min(10,rel*speed*.9)); b[3]=-max(4.2,(speed**2-b[2]**2)**.5)
             for br in self.mg_bricks[:]:
-                rx=105+br[0]*68; ry=175+br[1]*34
-                if rx-8<b[0]<rx+68 and ry-8<b[1]<ry+34:
+                rx,ry,rw,rh=br
+                if rx-9<b[0]<rx+rw+9 and ry-9<b[1]<ry+rh+9:
                     self.mg_bricks.remove(br); b[3]*=-1; self.mg_score+=5; break
             if not self.mg_bricks:
-                self.mg_wave+=1; self.mg_score+=100; self.mg_bricks=[[x,y] for y in range(min(7,5+self.mg_wave//2)) for x in range(12)]; b[2]*=1.08; b[3]*=1.08
+                self.mg_wave+=1; self.mg_score+=100
+                self.mg_bricks=heart_brick_layout((arena.left,arena.top,arena.width,arena.height),self.mg_wave)
+                b[2]*=1.06; b[3]*=1.06
             if b[1]>895:
                 self.mg_lives-=1
                 if self.mg_lives<=0: self.minigame_game_over("THE HEART FELL"); return
@@ -4044,7 +4348,7 @@ class Game:
                 elif o[1]<arena.top+12: self.mg_objects.remove(o)
             enemy_step=max(13,30-self.mg_level*2)
             if self.mg_tick%enemy_step==0 and self.mg_invaders:
-                edge=any((i[0]>905 if self.mg_enemy_dir>0 else i[0]<95) for i in self.mg_invaders)
+                edge=any((i[0]>arena.right-28 if self.mg_enemy_dir>0 else i[0]<arena.left+28) for i in self.mg_invaders)
                 if edge: self.mg_enemy_dir*=-1; [i.__setitem__(1,i[1]+22) for i in self.mg_invaders]
                 else: [i.__setitem__(0,i[0]+14*self.mg_enemy_dir) for i in self.mg_invaders]
             fire_rate=max(18,62-self.mg_level*4)
@@ -4057,19 +4361,20 @@ class Game:
             if self.mg_lives<=0: self.minigame_game_over("TARANEE WAS HIT"); return
             if any(inv[1]>755 for inv in self.mg_invaders): self.minigame_game_over("MERIDIAN OVERRAN TARANEE"); return
             if not self.mg_invaders:
-                self.mg_wave+=1; self.mg_score+=100; rows=min(6,4+self.mg_wave//2); self.mg_invaders=[[150+x*62,185+y*48] for y in range(rows) for x in range(11)]; self.mg_enemy_dir=1
+                self.mg_wave+=1; self.mg_score+=100
+                self.mg_invaders=taranee_invader_layout((arena.left,arena.top,arena.width,arena.height),self.mg_wave); self.mg_enemy_dir=1
         elif name=="CORNELIA EARTH GARDEN":
             # v6.34: less passive/easy. Vines arrive sooner, grow faster and
             # crowding itself feeds corruption, while still ramping gradually.
             spawn=max(11,38-self.mg_level*2)
             if self.mg_tick%spawn==0:
-                self.mg_objects.append([random.randint(arena.left+35,arena.right-35),790.0,"vine"])
+                self.mg_objects.append([random.randint(arena.left+35,arena.right-35),float(arena.bottom-55),"vine"])
                 if self.mg_level>=4 and random.random()<min(.34,.08+self.mg_level*.025):
-                    self.mg_objects.append([random.randint(arena.left+35,arena.right-35),790.0,"vine"])
+                    self.mg_objects.append([random.randint(arena.left+35,arena.right-35),float(arena.bottom-55),"vine"])
             for o in self.mg_objects[:]:
                 if o[2]=="vine": o[1]-=.34+self.mg_level*.05
-                if o[1]<350:
-                    self.mg_corruption+=1.6+min(1.4,self.mg_level*.09); self.mg_objects.remove(o)
+                if o[1]<arena.top+185:
+                    self.minigame_game_over("A CORRUPTED VINE REACHED THE CRITICAL LINE"); return
             self.mg_corruption+=max(0,len(self.mg_objects)-5)*.026
             if self.mg_corruption>=100: self.minigame_game_over("THE GARDEN WAS CORRUPTED")
         elif name=="BLUNK WASHING":
@@ -4167,17 +4472,19 @@ class Game:
         self.text(self.collection_gallery_title if self.collection_page=="GALLERY" else self.collection_page,55,88,self.font,COLORS["text"])
         items=self.collection_current_items()
         if self.collection_page=="GALLERY":
-            list_rect=pygame.Rect(42,135,420,805); preview=pygame.Rect(490,135,465,805)
+            # WINDOW_W is 860: the old 490+465 preview extended 95 pixels past
+            # the canvas and was visibly clipped on macOS. Keep a real gutter.
+            list_rect=pygame.Rect(42,135,350,805); preview=pygame.Rect(410,135,410,805)
             pygame.draw.rect(self.canvas,(16,10,28),preview); pygame.draw.rect(self.canvas,(100,65,125),preview,2)
             start=max(0,min(self.collection_item_index-9,max(0,len(items)-19)))
             for row,i in enumerate(range(start,min(len(items),start+19))):
                 item=items[i]; y=155+row*38
-                if i==self.collection_item_index: pygame.draw.rect(self.canvas,(82,42,105),(48,y-4,405,32))
-                self.text(("▶ " if i==self.collection_item_index else "  ")+item[:31],58,y,self.small)
+                if i==self.collection_item_index: pygame.draw.rect(self.canvas,(82,42,105),(48,y-4,338,32))
+                self.text(("▶ " if i==self.collection_item_index else "  ")+item[:25],58,y,self.small)
             if self.collection_gallery_files and self.collection_item_index < len(self.collection_gallery_files):
                 fp=self.collection_gallery_files[self.collection_item_index]
                 try:
-                    img=pygame.image.load(str(fp)).convert_alpha(); iw,ih=img.get_size(); margin=18
+                    img=load_clean_alpha(fp); iw,ih=img.get_size(); margin=18
                     sc=min((preview.width-2*margin)/max(1,iw),(preview.height-2*margin)/max(1,ih),1.0)
                     shown=pygame.transform.smoothscale(img,(max(1,int(iw*sc)),max(1,int(ih*sc))))
                     old=self.canvas.get_clip(); self.canvas.set_clip(preview.inflate(-6,-6)); self.canvas.blit(shown,shown.get_rect(center=preview.center)); self.canvas.set_clip(old)
@@ -4232,12 +4539,16 @@ class Game:
             px,py=self.mg_maze_player; pc=(ox+px*c+c//2,oy+py*c+c//2)
             if not mg_sprite("will_face",pc,c-3,c-3): pygame.draw.circle(self.canvas,(245,185,230),pc,13)
             cols=[(230,70,80),(240,150,90),(80,170,230),(150,95,185)]
-            for gx,gy,k in self.mg_maze_ghosts:
+            for ghost in self.mg_maze_ghosts:
+                gx,gy,k=ghost["x"],ghost["y"],ghost["kind"]
                 gc=(ox+gx*c+c//2,oy+gy*c+c//2)
-                if self.mg_fright>0:
-                    pygame.draw.circle(self.canvas,(125,160,210),gc,13)
-                elif not mg_sprite(f"will_enemy_{k+1}",gc,c-2,c-2):
-                    pygame.draw.circle(self.canvas,cols[k],gc,13)
+                shown=mg_sprite(f"will_enemy_{k+1}",gc,c-2,c-2)
+                if not shown: pygame.draw.circle(self.canvas,cols[k],gc,max(5,c//2-1))
+                if ghost["state"]=="eyes":
+                    pygame.draw.circle(self.canvas,(235,245,255),gc,max(5,c//2-2),2)
+                    pygame.draw.circle(self.canvas,(80,120,220),(gc[0]-3,gc[1]),2); pygame.draw.circle(self.canvas,(80,120,220),(gc[0]+3,gc[1]),2)
+                elif self.mg_fright>0 and ghost["state"]=="active":
+                    pygame.draw.circle(self.canvas,(105,165,245),gc,max(6,c//2),3)
         elif n=="HAY LIN FLIGHT":
             if "haylin_bg" in self.mg_art:
                 bg=pygame.transform.smoothscale(self.mg_art["haylin_bg"],arena.size); self.canvas.blit(bg,arena.topleft)
@@ -4246,32 +4557,51 @@ class Game:
             else: pygame.draw.circle(self.canvas,(180,225,245),(int(self.mg_player[0]),int(self.mg_player[1])),22)
             for x,gap,gapsz,_ in self.mg_obstacles:
                 top=max(0,int(gap-gapsz/2-arena.y)); bottom=int(gap+gapsz/2)
-                pygame.draw.rect(self.canvas,(80,65,95),(int(x),arena.y,44,top)); pygame.draw.rect(self.canvas,(80,65,95),(int(x),bottom,44,arena.bottom-bottom))
+                # Dark magic cloud columns replace the old tower/fence blocks.
+                for cy in range(arena.y+12,arena.y+top,20):
+                    pygame.draw.circle(self.canvas,(54,35,78),(int(x)+22,cy),26)
+                    pygame.draw.circle(self.canvas,(92,50,116),(int(x)+10,cy+7),17)
+                for cy in range(bottom+12,arena.bottom,20):
+                    pygame.draw.circle(self.canvas,(54,35,78),(int(x)+22,cy),26)
+                    pygame.draw.circle(self.canvas,(92,50,116),(int(x)+34,cy-6),17)
             self.text("SPACE — FLAP",65,125,self.small)
         elif n=="CALEB RUNNER":
-            pygame.draw.line(self.canvas,(150,120,120),(arena.left,self.mg_ground+25),(arena.right,self.mg_ground+25),4); mg_sprite("caleb",(160,int(self.mg_player[1])-15),78,105)
+            pygame.draw.line(self.canvas,(150,120,120),(arena.left,self.mg_ground+25),(arena.right,self.mg_ground+25),4)
+            ducking=self.mg_duck_timer>0 or pygame.key.get_pressed()[pygame.K_DOWN]
+            pr=self.caleb_player_rect(ducking); src=self.mg_art.get("caleb")
+            if src:
+                target=(88,68) if ducking else (120,138)
+                im=pygame.transform.smoothscale(src,target); self.canvas.blit(im,im.get_rect(midbottom=(160,int(self.mg_player[1]+25))))
+            else: pygame.draw.rect(self.canvas,(165,115,80),pr)
             for o in self.mg_obstacles:
-                x,y,h=o[:3]; overhead=len(o)>4 and o[4]
-                if overhead: pygame.draw.rect(self.canvas,(130,80,70),(int(x),int(y-115),50,28))
-                else: pygame.draw.rect(self.canvas,(130,80,70),(int(x),int(y-h),max(18,h//2),int(h)))
+                pygame.draw.rect(self.canvas,(130,80,70),self.caleb_obstacle_rect(o))
             self.text("SPACE/UP — JUMP   DOWN — DUCK",65,125,self.small)
         elif n=="HEART BREAKER":
-            for x,y in self.mg_bricks:
-                r=pygame.Rect(105+x*68,175+y*34,60,26); pygame.draw.rect(self.canvas,(92,82,86),r); pygame.draw.rect(self.canvas,(145,128,126),r,2)
+            for x,y,w,h in self.mg_bricks:
+                r=pygame.Rect(x,y,w,h); pygame.draw.rect(self.canvas,(92,82,86),r); pygame.draw.rect(self.canvas,(145,128,126),r,2)
                 pygame.draw.line(self.canvas,(45,37,42),(r.x+18,r.y+2),(r.x+29,r.y+13),2); pygame.draw.line(self.canvas,(45,37,42),(r.x+29,r.y+13),(r.x+23,r.bottom-2),2); pygame.draw.line(self.canvas,(45,37,42),(r.x+29,r.y+13),(r.x+43,r.y+7),2)
             pygame.draw.rect(self.canvas,(225,185,240),(int(self.mg_paddle_x-self.mg_paddle_w/2),810,int(self.mg_paddle_w),18)); pygame.draw.circle(self.canvas,(250,220,245),(int(self.mg_ball[0]),int(self.mg_ball[1])),10)
             self.text(f"WAVE {self.mg_wave}   LEFT/RIGHT — PADDLE",65,125,self.small)
         elif n=="TARANEE FIRE SHOT":
             for x,y in self.mg_invaders: pygame.draw.rect(self.canvas,(205,85,75),(int(x-18),int(y-14),36,28))
-            mg_sprite("taranee",(int(self.mg_player[0]),795),80,105)
+            mg_sprite("taranee",(int(self.mg_player[0]),790),130,155)
             for x,y,k in self.mg_objects:
                 if k=="shot": pygame.draw.rect(self.canvas,(255,190,90),(int(x-3),int(y-12),6,24))
             for x,y in self.mg_enemy_shots: pygame.draw.circle(self.canvas,(205,70,190),(int(x),int(y)),7)
             self.text(f"WAVE {self.mg_wave}   LEFT/RIGHT + SPACE — FIRE",65,125,self.small)
         elif n=="CORNELIA EARTH GARDEN":
-            pygame.draw.rect(self.canvas,(55,85,48),(arena.x,760,arena.width,max(0,arena.bottom-760))); mg_sprite("cornelia",(int(self.mg_player[0]),795),80,105)
-            for x,y,k in self.mg_objects: pygame.draw.line(self.canvas,(95,170,75),(int(x),835),(int(x),int(y)),7); pygame.draw.circle(self.canvas,(125,55,130),(int(x),int(y)),12)
-            self.text(f"CORRUPTION {int(self.mg_corruption)}%   MOVE + SPACE — CLEANSE",65,125,self.small)
+            critical=arena.top+185
+            pygame.draw.line(self.canvas,(170,55,85),(arena.left,critical),(arena.right,critical),3)
+            pygame.draw.rect(self.canvas,(55,85,48),(arena.x,760,arena.width,max(0,arena.bottom-760)))
+            mg_sprite("cornelia",(int(self.mg_player[0]),int(self.mg_player[1])),130,165)
+            for x,y,k in self.mg_objects:
+                pygame.draw.line(self.canvas,(102,45,118),(int(x),arena.bottom-32),(int(x),int(y)),6)
+                for ty in range(int(y)+20,arena.bottom-40,42):
+                    side=-1 if (ty//42)%2 else 1
+                    pygame.draw.polygon(self.canvas,(86,33,98),[(int(x),ty),(int(x)+side*12,ty-7),(int(x),ty+5)])
+                pygame.draw.circle(self.canvas,(105,24,52),(int(x),int(y)),13)
+                pygame.draw.circle(self.canvas,(155,38,72),(int(x)-5,int(y)-3),7)
+            self.text(f"CORRUPTION {int(self.mg_corruption)}%   ARROWS + SPACE — CLEANSE",65,125,self.small)
         elif n=="BLUNK WASHING":
             if "blunk_face" in self.mg_art:
                 src=self.mg_art["blunk_face"]; h=92; w=max(1,int(src.get_width()*h/src.get_height())); im=pygame.transform.smoothscale(src,(w,h)); self.canvas.blit(im,im.get_rect(center=(int(self.mg_player[0]),800)))
@@ -4293,7 +4623,7 @@ class Game:
             self.text(f"COMBO {self.mg_combo}   PRESS ARROWS ON THE LINE",65,125,self.small)
         elif n=="IRMA WHIRLPOOL":
             cx,cy=WINDOW_W//2,520; pygame.draw.circle(self.canvas,(80,150,220),(cx,cy),70,4); mg_sprite("irma_face",(cx,cy),62,70)
-            ex=cx+math.cos(self.mg_whirl_angle)*155; ey=cy+math.sin(self.mg_whirl_angle)*155; pygame.draw.line(self.canvas,(160,225,255),(cx,cy),(int(ex),int(ey)),7)
+            ex=cx+math.cos(self.mg_whirl_angle)*155; ey=cy+math.sin(self.mg_whirl_angle)*155; pygame.draw.line(self.canvas,(160,225,255),(cx,cy),(int(ex),int(ey)),4)
             for rad,ang,k in self.mg_objects:
                 x=cx+math.cos(ang)*rad; y=cy+math.sin(ang)*rad; pygame.draw.circle(self.canvas,(230,80,100) if k=="enemy" else (230,205,95),(int(x),int(y)),12)
             self.text("LEFT/RIGHT — AIM WATER   SPACE — BLAST RED HAZARDS",65,125,self.small)
