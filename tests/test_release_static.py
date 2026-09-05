@@ -26,7 +26,7 @@ game = load_main_without_pygame()
 
 class ReleaseStaticTests(unittest.TestCase):
     def test_release_version_and_exact_tetromino_bases(self):
-        self.assertEqual(game.BUILD_VERSION, "6.36.1")
+        self.assertEqual(game.BUILD_VERSION, "6.37.0")
         self.assertEqual(game.BASE_SHAPES, {
             "I": [(0, 0), (0, 1), (0, 2), (0, 3)],
             "O": [(0, 0), (1, 0), (0, 1), (1, 1)],

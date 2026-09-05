@@ -4,9 +4,9 @@ Intended flow::
 
     Phobos spawn remark -> optional character reply -> rare Phobos counter
 
-This module is isolated from ``main.py``.  It chooses dialogue and exposes a
-small queue, while pygame remains responsible for subtitles, audio channels
-and ducking the music.
+This module is isolated from ``main.py`` and deliberately disabled.  It keeps
+the rejected experiment reproducible for development, but the game does not
+display its text as subtitles or play its queue while Tetris is running.
 """
 
 from __future__ import annotations

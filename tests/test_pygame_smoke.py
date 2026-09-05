@@ -27,8 +27,12 @@ class PygameSmokeTests(unittest.TestCase):
         pygame.quit()
 
     def test_changed_minigames_draw_one_frame(self):
+        self.assertEqual(len(self.game.minigame_names), 15)
+        self.assertNotIn("IRMA RAIN DANCE", self.game.minigame_names)
         for name in ("WILL MAZE", "HAY LIN FLIGHT", "CALEB RUNNER", "HEART BREAKER",
-                     "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "IRMA WHIRLPOOL"):
+                     "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "IRMA WHIRLPOOL",
+                     "BLUNK TREASURE ESCAPE", "CORNELIA STONE COVERS",
+                     "IRMA DARK WATER PANIC", "HAY LIN RESCUE"):
             with self.subTest(name=name):
                 self.game.start_minigame(name)
                 self.game.update_minigame()
@@ -68,9 +72,13 @@ class PygameSmokeTests(unittest.TestCase):
 
         source = ROOT / "assets/cutscenes/lines100/phobos_action.png"
         cleaned = load_clean_alpha(source)
-        components = pygame.mask.from_surface(cleaned, 8).connected_components(4)
-        substantial = [mask for mask in components if mask.count() > 100]
-        self.assertEqual(len(substantial), 1)
+        repaired_pixels = pygame.mask.from_surface(cleaned, 8).count()
+        damaged = pygame.image.load(str(source)).convert_alpha()
+        damaged_ratio = pygame.mask.from_surface(damaged, 8).count() / (352 * 288)
+        repaired_ratio = repaired_pixels / (352 * 288)
+        self.assertGreater(repaired_ratio, damaged_ratio)
+        self.assertEqual(cleaned.get_size(), (352, 288))
+        self.assertEqual(self.game.phobos_resistance_body.get_size(), (352, 288))
 
     def test_will_maze_ghosts_leave_the_house_one_by_one(self):
         self.game.start_minigame("WILL MAZE")
@@ -78,6 +86,35 @@ class PygameSmokeTests(unittest.TestCase):
                          ["active", "house", "house", "house"])
         self.assertEqual([ghost["release"] for ghost in self.game.mg_maze_ghosts],
                          [0, 4 * 60, 9 * 60, 15 * 60])
+
+    def test_blunk_steals_treasure_and_escapes_serpent_cedric(self):
+        self.game.start_minigame("BLUNK TREASURE ESCAPE")
+        for _ in range(5):
+            self.game.handle_minigame_key(pygame.K_RIGHT)
+        self.assertEqual(self.game.mg_gw_carried, 1)
+        for _ in range(5):
+            self.game.handle_minigame_key(pygame.K_LEFT)
+        self.assertEqual(self.game.mg_gw_banked, 1)
+        self.assertEqual(self.game.mg_score, 10)
+
+    def test_three_other_game_watch_loops_score_without_victory(self):
+        self.game.start_minigame("CORNELIA STONE COVERS")
+        self.game.mg_objects = [[self.game.mg_gw_cover, 1]]
+        self.game.update_minigame()
+        self.assertEqual(self.game.mg_score, 2)
+        self.assertFalse(self.game.mg_over)
+
+        self.game.start_minigame("IRMA DARK WATER PANIC")
+        self.game.mg_objects = [[self.game.mg_gw_lane, self.game.mg_arena.bottom - 91.0]]
+        self.game.update_minigame()
+        self.assertEqual(self.game.mg_gw_stored, 1)
+        self.assertFalse(self.game.mg_over)
+
+        self.game.start_minigame("HAY LIN RESCUE")
+        self.game.mg_objects = [[self.game.mg_gw_rescue_lane, self.game.mg_arena.bottom - 106.0, 0]]
+        self.game.update_minigame()
+        self.assertEqual(self.game.mg_objects[0][2], 1)
+        self.assertFalse(self.game.mg_over)
 
     def test_room_variants_and_action_frames_draw(self):
         self.game.ensure_story100_assets()

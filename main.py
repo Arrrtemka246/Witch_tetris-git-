@@ -10,12 +10,12 @@ from pathlib import Path
 import pygame
 
 # ============================================================
-# W.I.T.C.H. Tetris — Pygame build v6.36.1
+# W.I.T.C.H. Tetris — Pygame build v6.37.0
 # Full-color 50x50 source cells, auto-fit, transparency, Hold, story checkpoints and secret-code system.
 # ============================================================
 
 FPS = 60
-BUILD_VERSION = "6.36.1"
+BUILD_VERSION = "6.37.0"
 BOARD_W = 10
 BOARD_H = 20
 CELL = 50
@@ -399,8 +399,50 @@ def load_clean_alpha(path: Path, threshold: int = 30) -> pygame.Surface:
     the extra fragments around Caleb, Cornelia and Phobos without rewriting
     the source artwork.
     """
+    # The old standalone Phobos action PNG had already lost the RGB values of
+    # many dark pixels, so no alpha post-processing could reconstruct them.
+    # Its opaque source sheet still contains the complete cloak. Rebuild that
+    # pose in memory and remove only black pixels connected to the crop border;
+    # internal black folds remain opaque.
+    if path.name == "phobos_action.png" and path.parent.name == "lines100":
+        source_sheet = path.parent.parent / "lines200" / "phobos_action_sheet.png"
+        if source_sheet.exists():
+            sheet = pygame.image.load(str(source_sheet)).convert_alpha()
+            # This standalone frame is an exact 352x288 crop beginning at
+            # (28, 28) in the supplied 4x4 sheet.
+            crop = pygame.Rect(28, 28, min(352, sheet.get_width()-28), min(288, sheet.get_height()-28))
+            src = sheet.subsurface(crop).copy()
+            # The old PNG still has a useful outer silhouette even though its
+            # black fabric pixels are transparent. Scale that silhouette to
+            # the intact source and close only small internal gaps. This keeps
+            # the empty space around his hands while restoring cloak folds.
+            damaged = pygame.image.load(str(path)).convert_alpha()
+            silhouette = pygame.mask.from_surface(damaged, 8).to_surface(
+                setcolor=(255,255,255,255), unsetcolor=(0,0,0,0)
+            )
+            mask = pygame.mask.from_surface(silhouette, 8)
+            mask = close_small_mask_gaps(mask, max_gap=36)
+            matte = mask.to_surface(setcolor=(255,255,255,255), unsetcolor=(0,0,0,0))
+            src.blit(matte, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+            return src
     src = pygame.image.load(str(path)).convert_alpha()
     return clean_alpha_surface(src, threshold)
+
+
+def close_small_mask_gaps(mask: pygame.mask.Mask, max_gap: int = 36) -> pygame.mask.Mask:
+    """Close short holes in a sprite silhouette without filling limb gaps."""
+    out = mask.copy(); width,height = out.get_size()
+    for y in range(height):
+        filled=[x for x in range(width) if out.get_at((x,y))]
+        for left,right in zip(filled,filled[1:]):
+            if 1 < right-left <= max_gap+1:
+                for x in range(left+1,right): out.set_at((x,y),1)
+    for x in range(width):
+        filled=[y for y in range(height) if out.get_at((x,y))]
+        for top,bottom in zip(filled,filled[1:]):
+            if 1 < bottom-top <= max_gap+1:
+                for y in range(top+1,bottom): out.set_at((x,y),1)
+    return out
 
 
 def clean_alpha_surface(src: pygame.Surface, threshold: int = 30) -> pygame.Surface:
@@ -548,7 +590,7 @@ class Game:
         self.collection_page = "root"
         self.collection_item_index = 0
         self.collection_items = []
-        self.minigame_names = ["SNAKE — BLUNK/CEDRIC/PHOBOS", "WILL MAZE", "HAY LIN FLIGHT", "CALEB RUNNER", "HEART BREAKER", "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "BLUNK WASHING", "IRMA BUBBLE TROUBLE", "IRMA WHIRLPOOL", "PHOBOS TETRIS ???"]
+        self.minigame_names = ["SNAKE — BLUNK/CEDRIC/PHOBOS", "WILL MAZE", "HAY LIN FLIGHT", "CALEB RUNNER", "HEART BREAKER", "TARANEE FIRE SHOT", "CORNELIA EARTH GARDEN", "BLUNK WASHING", "IRMA BUBBLE TROUBLE", "IRMA WHIRLPOOL", "BLUNK TREASURE ESCAPE", "CORNELIA STONE COVERS", "IRMA DARK WATER PANIC", "HAY LIN RESCUE", "PHOBOS TETRIS ???"]
         self.minigame_index = 0
         self.minigame = None
         self.collection_cutscene = False
@@ -717,10 +759,18 @@ class Game:
             except pygame.error:
                 pass
         self.phobos_resistance_body = None
+        # resistance_body.png contains large transparent holes where black
+        # costume pixels were destructively keyed out in an earlier build.
+        # Use the intact opaque action sheet through load_clean_alpha instead.
+        repaired_action = LINES100_DIR / "phobos_action.png"
         resistance_path = PHOBOS_MENU_DIR / "resistance_body.png"
-        if resistance_path.exists():
-            try: self.phobos_resistance_body = pygame.image.load(str(resistance_path)).convert_alpha()
-            except pygame.error: pass
+        try:
+            if repaired_action.exists():
+                self.phobos_resistance_body = load_clean_alpha(repaired_action)
+            elif resistance_path.exists():
+                self.phobos_resistance_body = load_clean_alpha(resistance_path)
+        except pygame.error:
+            self.phobos_resistance_body = None
 
         self.vtd_observer = None
         vtd_observer_path = MENU_DIR / "vtd" / "observer.jpg"
@@ -4057,8 +4107,12 @@ class Game:
         self.mg_bricks=heart_brick_layout(arena_tuple,self.mg_wave)
         self.mg_invaders=taranee_invader_layout(arena_tuple,self.mg_wave); self.mg_enemy_dir=1; self.mg_enemy_shots=[]
         self.mg_bubbles=[[340.0,300.0,3.1,-5.7,48],[660.0,240.0,-3.3,-5.1,48]]
-        self.mg_notes=[]; self.mg_whirl_angle=0.0; self.mg_whirl_mode="PULL"
+        self.mg_whirl_angle=0.0; self.mg_whirl_mode="PULL"
         self.mg_corruption=0.0
+        # Fixed-position state shared by the v6.37 Game & Watch-style games.
+        self.mg_gw_position=0; self.mg_gw_cedric=6; self.mg_gw_carried=0; self.mg_gw_banked=0
+        self.mg_gw_safe_until=FPS; self.mg_gw_cover=1; self.mg_gw_lane=1
+        self.mg_gw_stored=0; self.mg_gw_rescue_lane=1
         self.mg_t_board=[[None for _ in range(10)] for _ in range(18)]
         self.mg_t_kind=random.choice(list(PIECES)); self.mg_t_rot=0; self.mg_t_x=3; self.mg_t_y=0
         self.mg_t_next=random.choice(list(PIECES)); self.mg_t_drop=0
@@ -4113,6 +4167,14 @@ class Game:
             try: pygame.mixer.music.set_volume(.32)
             except pygame.error: pass
 
+    def game_watch_take_hit(self, reason):
+        """Remove one life and preserve the endless, score-only game loop."""
+        self.mg_lives-=1
+        if self.mg_lives<=0:
+            self.minigame_game_over(reason)
+            return True
+        return False
+
     def handle_minigame_key(self,key):
         if self.mg_over:
             if key in (pygame.K_SPACE,pygame.K_RETURN): self.start_minigame(self.minigame)
@@ -4161,19 +4223,31 @@ class Game:
             if key==pygame.K_LEFT: self.mg_player[0]-=44
             elif key==pygame.K_RIGHT: self.mg_player[0]+=44
             elif key==pygame.K_SPACE and not any(o[2]=="ray" for o in self.mg_objects): self.mg_objects.append([self.mg_player[0],790.0,"ray"])
-        elif name=="IRMA RAIN DANCE":
-            lane={pygame.K_LEFT:0,pygame.K_DOWN:1,pygame.K_UP:2,pygame.K_RIGHT:3}.get(key)
-            if lane is not None:
-                hit=[n for n in self.mg_notes if n[0]==lane and 755<n[1]<845]
-                if hit:
-                    self.mg_notes.remove(min(hit,key=lambda n:abs(n[1]-805))); self.mg_score+=10+min(20,self.mg_combo); self.mg_combo+=1
-                else:
-                    self.mg_combo=0; self.mg_lives-=1
-                    if self.mg_lives<=0: self.minigame_game_over("RHYTHM LOST")
         elif name=="IRMA WHIRLPOOL":
             if key==pygame.K_LEFT: self.mg_whirl_angle-=.28
             elif key==pygame.K_RIGHT: self.mg_whirl_angle+=.28
             elif key==pygame.K_SPACE: self.mg_whirl_mode="BLAST"
+        elif name=="BLUNK TREASURE ESCAPE":
+            old=self.mg_gw_position
+            if key==pygame.K_LEFT: self.mg_gw_position=max(0,self.mg_gw_position-1)
+            elif key==pygame.K_RIGHT: self.mg_gw_position=min(5,self.mg_gw_position+1)
+            if self.mg_gw_position==5 and old!=5:
+                self.mg_gw_carried=1
+            if self.mg_gw_position==0 and old!=0 and self.mg_gw_carried:
+                self.mg_gw_banked+=self.mg_gw_carried
+                self.mg_score+=10*self.mg_gw_carried
+                self.mg_gw_carried=0; self.mg_gw_cedric=6; self.mg_wave+=1
+        elif name=="CORNELIA STONE COVERS":
+            if key==pygame.K_LEFT: self.mg_gw_cover=max(0,self.mg_gw_cover-1)
+            elif key==pygame.K_RIGHT: self.mg_gw_cover=min(3,self.mg_gw_cover+1)
+        elif name=="IRMA DARK WATER PANIC":
+            if key==pygame.K_LEFT: self.mg_gw_lane=max(0,self.mg_gw_lane-1)
+            elif key==pygame.K_RIGHT: self.mg_gw_lane=min(2,self.mg_gw_lane+1)
+            elif key==pygame.K_SPACE and self.mg_gw_stored>=3:
+                self.mg_score+=15; self.mg_gw_stored=0; self.mg_wave+=1
+        elif name=="HAY LIN RESCUE":
+            if key==pygame.K_LEFT: self.mg_gw_rescue_lane=max(0,self.mg_gw_rescue_lane-1)
+            elif key==pygame.K_RIGHT: self.mg_gw_rescue_lane=min(2,self.mg_gw_rescue_lane+1)
         elif name=="PHOBOS TETRIS ???":
             def valid(nx,ny,nr):
                 for dx,dy in SHAPES[self.mg_t_kind][nr]:
@@ -4414,14 +4488,6 @@ class Game:
                 elif r[1]<arena.top+12: self.mg_objects.remove(r)
             if not self.mg_bubbles:
                 self.mg_wave+=1; count=min(5,2+self.mg_wave//2); self.mg_bubbles=[[random.randint(180,820),random.randint(190,390),random.choice((-3.5,3.5)),-5.5,48] for _ in range(count)]
-        elif name=="IRMA RAIN DANCE":
-            spawn=max(10,25-self.mg_level); fall=6+min(9,self.mg_level*.55)
-            if self.mg_tick%spawn==0: self.mg_notes.append([random.randrange(4),140.0])
-            for n in self.mg_notes[:]:
-                n[1]+=fall
-                if n[1]>855:
-                    self.mg_notes.remove(n); self.mg_combo=0; self.mg_lives-=1
-                    if self.mg_lives<=0: self.minigame_game_over("IRMA MISSED THE RHYTHM"); return
         elif name=="IRMA WHIRLPOOL":
             # Arrow keys are held controls, not one-step taps.
             self.mg_whirl_angle += .004 + ((1 if keys[pygame.K_RIGHT] else 0)-(1 if keys[pygame.K_LEFT] else 0))*.055
@@ -4440,6 +4506,58 @@ class Game:
                     self.mg_objects.remove(o)
                 if self.mg_lives<=0: self.minigame_game_over("THE WHIRLPOOL WON"); return
             self.mg_whirl_mode="AIM"
+        elif name=="BLUNK TREASURE ESCAPE":
+            # Blunk raids a treasure cache and must return to the left before
+            # Cedric's canonical serpent form catches him. There is no boat
+            # and no final treasure: every delivery starts a faster pursuit.
+            chase_step=max(14,54-self.mg_level*4-self.mg_wave)
+            if self.mg_tick%chase_step==0:
+                if self.mg_gw_cedric>self.mg_gw_position: self.mg_gw_cedric-=1
+                elif self.mg_gw_cedric<self.mg_gw_position: self.mg_gw_cedric+=1
+            if self.mg_tick>=self.mg_gw_safe_until and self.mg_gw_cedric==self.mg_gw_position:
+                lost=self.game_watch_take_hit("CEDRIC CAUGHT BLUNK")
+                self.mg_gw_position=0; self.mg_gw_cedric=6; self.mg_gw_carried=0
+                self.mg_gw_safe_until=self.mg_tick+FPS
+                if lost: return
+        elif name=="CORNELIA STONE COVERS":
+            spawn=max(28,92-self.mg_level*6)
+            if self.mg_tick%spawn==0:
+                self.mg_objects.append([random.randrange(4),max(18,58-self.mg_level*3)])
+            for traveller in self.mg_objects[:]:
+                traveller[1]-=1
+                if traveller[1]>0: continue
+                self.mg_objects.remove(traveller)
+                if traveller[0]==self.mg_gw_cover: self.mg_score+=2
+                elif self.game_watch_take_hit("THE MERIDIAN ROAD COLLAPSED"): return
+        elif name=="IRMA DARK WATER PANIC":
+            spawn=max(24,78-self.mg_level*5)
+            if self.mg_tick%spawn==0:
+                self.mg_objects.append([random.randrange(3),float(arena.top+25)])
+            speed=3.2+min(5.8,self.mg_level*.38)
+            for drop in self.mg_objects[:]:
+                drop[1]+=speed
+                if drop[1]<arena.bottom-92: continue
+                self.mg_objects.remove(drop)
+                if drop[0]==self.mg_gw_lane and self.mg_gw_stored<3:
+                    self.mg_gw_stored+=1; self.mg_score+=1
+                elif self.game_watch_take_hit("DARK WATER FLOODED MERIDIAN"): return
+        elif name=="HAY LIN RESCUE":
+            spawn=max(32,94-self.mg_level*6)
+            if self.mg_tick%spawn==0:
+                self.mg_objects.append([random.randrange(3),float(arena.top+35),0])
+            speed=3.0+min(6.0,self.mg_level*.36)
+            for citizen in self.mg_objects[:]:
+                citizen[1]+=speed
+                if citizen[1]<arena.bottom-105: continue
+                if citizen[0]!=self.mg_gw_rescue_lane:
+                    self.mg_objects.remove(citizen)
+                    if self.game_watch_take_hit("A CITIZEN FELL BETWEEN PORTALS"): return
+                    continue
+                citizen[2]+=1
+                if citizen[2]>=2:
+                    self.mg_objects.remove(citizen); self.mg_score+=5; self.mg_wave+=1
+                else:
+                    citizen[0]=(citizen[0]+1)%3; citizen[1]=float(arena.top+55)
         elif name=="PHOBOS TETRIS ???":
             def valid(nx,ny,nr):
                 for dx,dy in SHAPES[self.mg_t_kind][nr]:
@@ -4615,18 +4733,75 @@ class Game:
             for x,y,k in self.mg_objects:
                 if k=="ray": pygame.draw.line(self.canvas,(160,220,255),(int(x),int(y)),(int(x),805),4)
             self.text(f"WAVE {self.mg_wave}   LEFT/RIGHT + SPACE — EXTINGUISH FIRE",65,125,self.small)
-        elif n=="IRMA RAIN DANCE":
-            lanes=[260,420,580,740]
-            for i,x in enumerate(lanes): pygame.draw.line(self.canvas,(70,70,95),(x,150),(x,850),2); self.text(["←","↓","↑","→"][i],x-9,860,self.font)
-            pygame.draw.line(self.canvas,(225,185,240),(210,805),(790,805),4)
-            for lane,y in self.mg_notes: pygame.draw.circle(self.canvas,(100,185,245),(lanes[lane],int(y)),15)
-            self.text(f"COMBO {self.mg_combo}   PRESS ARROWS ON THE LINE",65,125,self.small)
         elif n=="IRMA WHIRLPOOL":
             cx,cy=WINDOW_W//2,520; pygame.draw.circle(self.canvas,(80,150,220),(cx,cy),70,4); mg_sprite("irma_face",(cx,cy),62,70)
             ex=cx+math.cos(self.mg_whirl_angle)*155; ey=cy+math.sin(self.mg_whirl_angle)*155; pygame.draw.line(self.canvas,(160,225,255),(cx,cy),(int(ex),int(ey)),4)
             for rad,ang,k in self.mg_objects:
                 x=cx+math.cos(ang)*rad; y=cy+math.sin(ang)*rad; pygame.draw.circle(self.canvas,(230,80,100) if k=="enemy" else (230,205,95),(int(x),int(y)),12)
             self.text("LEFT/RIGHT — AIM WATER   SPACE — BLAST RED HAZARDS",65,125,self.small)
+        elif n=="BLUNK TREASURE ESCAPE":
+            xs=[130+i*105 for i in range(7)]; track_y=690
+            pygame.draw.line(self.canvas,(104,78,55),(xs[0],track_y+42),(xs[5],track_y+42),8)
+            for x in xs[:6]:
+                pygame.draw.circle(self.canvas,(195,160,90),(x,track_y+42),10)
+            # The cache replaces the mistakenly proposed boat. Blunk must
+            # steal one object and escape left while serpent-Cedric pursues.
+            chest=pygame.Rect(xs[5]-42,track_y-12,84,58)
+            pygame.draw.rect(self.canvas,(112,62,32),chest); pygame.draw.rect(self.canvas,(224,178,66),chest,5)
+            pygame.draw.circle(self.canvas,(250,220,85),(xs[5],track_y+16),8)
+            bx=xs[self.mg_gw_position]
+            mg_sprite("blunk_face",(bx,track_y-35),82,82)
+            if self.mg_gw_carried: pygame.draw.circle(self.canvas,(255,220,70),(bx+30,track_y-58),10)
+            cx=xs[min(6,self.mg_gw_cedric)]
+            for seg in range(7,-1,-1):
+                sx=min(arena.right-8,cx+seg*20); sy=track_y-15+int(math.sin(seg*.9)*18)
+                pygame.draw.circle(self.canvas,(50,92,58),(sx,sy),24)
+                pygame.draw.arc(self.canvas,(205,55,48),(sx-24,sy-24,48,48),0,math.pi,5)
+            mg_sprite("cedric_face",(min(arena.right-58,cx),track_y-92),105,112)
+            self.text(f"TREASURE {self.mg_gw_banked}   CARRIED {self.mg_gw_carried}",65,125,self.small)
+            self.text("LEFT/RIGHT — RAID THE CACHE AND ESCAPE CEDRIC",130,850,self.small)
+        elif n=="CORNELIA STONE COVERS":
+            xs=[155+i*180 for i in range(4)]; road_y=680
+            pygame.draw.rect(self.canvas,(82,70,75),(arena.left+15,road_y-25,arena.width-30,125))
+            for i,x in enumerate(xs):
+                pygame.draw.ellipse(self.canvas,(18,12,22),(x-48,road_y,96,46))
+                if i==self.mg_gw_cover:
+                    pygame.draw.ellipse(self.canvas,(133,114,105),(x-55,road_y-8,110,38))
+                    pygame.draw.ellipse(self.canvas,(205,180,145),(x-55,road_y-8,110,38),4)
+            for hole,remaining in self.mg_objects:
+                y=max(arena.top+90,road_y-80-int(remaining)*5)
+                pygame.draw.circle(self.canvas,(232,202,166),(xs[hole],y),20)
+                pygame.draw.line(self.canvas,(232,202,166),(xs[hole],y+20),(xs[hole],y+55),7)
+            mg_sprite("cornelia",(WINDOW_W//2,390),165,225)
+            self.text("LEFT/RIGHT — MOVE THE EARTH COVER",205,850,self.small)
+        elif n=="IRMA DARK WATER PANIC":
+            xs=(220,430,640)
+            for x in xs: pygame.draw.line(self.canvas,(50,70,95),(x,arena.top+25),(x,arena.bottom-90),2)
+            for lane,y in self.mg_objects:
+                x=xs[int(lane)]; pygame.draw.circle(self.canvas,(85,35,125),(x,int(y)),15)
+                pygame.draw.circle(self.canvas,(145,70,190),(x-4,int(y)-5),5)
+            ix=xs[self.mg_gw_lane]
+            mg_sprite("irma_face",(ix,760),82,92)
+            vessel=pygame.Rect(ix-42,798,84,55)
+            pygame.draw.rect(self.canvas,(65,125,175),vessel,4)
+            fill=int(47*self.mg_gw_stored/3)
+            if fill: pygame.draw.rect(self.canvas,(74,35,115),(vessel.x+7,vessel.bottom-7-fill,vessel.width-14,fill))
+            # Dumped corruption lands on Phobos's guards below the ledge.
+            for gx in (330,530):
+                pygame.draw.circle(self.canvas,(75,55,62),(gx,875),20); pygame.draw.rect(self.canvas,(82,60,68),(gx-18,888,36,25))
+            self.text(f"VESSEL {self.mg_gw_stored}/3   LEFT/RIGHT CATCH   SPACE DUMP",95,125,self.small)
+        elif n=="HAY LIN RESCUE":
+            xs=(200,430,660)
+            for x in xs: pygame.draw.line(self.canvas,(70,100,135),(x,arena.top+35),(x,arena.bottom-105),2)
+            for lane,y,bounces in self.mg_objects:
+                x=xs[int(lane)]; col=(240,210,165) if not bounces else (190,225,250)
+                pygame.draw.circle(self.canvas,col,(x,int(y)),19)
+                pygame.draw.line(self.canvas,col,(x,int(y)+19),(x,int(y)+48),6)
+            hx=xs[self.mg_gw_rescue_lane]
+            mg_sprite("haylin_flight",(hx,790),118,105)
+            pygame.draw.arc(self.canvas,(130,210,245),(hx-70,790,140,55),math.pi,2*math.pi,7)
+            pygame.draw.ellipse(self.canvas,(115,70,160),(arena.right-105,250,70,150),7)
+            self.text("LEFT/RIGHT — BOUNCE EACH CITIZEN TWICE",175,850,self.small)
         else:
             bx,by,cs=330,175,34
             pygame.draw.rect(self.canvas,(5,5,8),(bx,by,10*cs,18*cs)); pygame.draw.rect(self.canvas,(100,90,105),(bx,by,10*cs,18*cs),2)
