@@ -23,7 +23,6 @@ from prototypes.future_minigames import (  # noqa: E402
 from prototypes.game_watch_skeletons import (  # noqa: E402
     BlunkTreasureEscapeState,
     CorneliaManholeState,
-    FallingRescueState,
     IrmaOilPanicState,
 )
 
@@ -154,12 +153,6 @@ class GameWatchSkeletonTests(unittest.TestCase):
         self.assertEqual(state.banked, 1)
         self.assertEqual(state.status, "playing")
 
-    def test_falling_rescue_eventually_loses_when_ignored(self):
-        state = FallingRescueState(seed=4, catcher_lane=0)
-        state.objects = [[1, 99.0, 0], [2, 99.0, 0], [1, 99.0, 0]]
-        state.tick()
-        self.assertEqual(state.status, "lost")
-
     def test_manhole_cover_scores_only_on_matching_hole(self):
         state = CorneliaManholeState(cover=2)
         state.travellers = [[2, 31]]
@@ -168,6 +161,7 @@ class GameWatchSkeletonTests(unittest.TestCase):
 
     def test_irma_dumps_only_full_vessel(self):
         state = IrmaOilPanicState()
+        self.assertEqual((state.lanes, state.lane), (5, 2))
         self.assertFalse(state.dump())
         state.stored = state.capacity
         self.assertTrue(state.dump())

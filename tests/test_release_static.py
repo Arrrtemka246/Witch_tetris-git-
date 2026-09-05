@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import sys
 import types
 import unittest
@@ -26,7 +27,7 @@ game = load_main_without_pygame()
 
 class ReleaseStaticTests(unittest.TestCase):
     def test_release_version_and_exact_tetromino_bases(self):
-        self.assertEqual(game.BUILD_VERSION, "6.37.0")
+        self.assertEqual(game.BUILD_VERSION, "6.37.1")
         self.assertEqual(game.BASE_SHAPES, {
             "I": [(0, 0), (0, 1), (0, 2), (0, 3)],
             "O": [(0, 0), (1, 0), (0, 1), (1, 1)],
@@ -46,6 +47,13 @@ class ReleaseStaticTests(unittest.TestCase):
             values.append(instance.fall_interval())
             self.assertEqual(instance.lines, 0)
         self.assertEqual(values, [32, 28, 24, 20, 17])
+
+    def test_irma_five_lane_difficulty_curve_accelerates(self):
+        level_1, spawn_1, speed_1 = game.irma_dark_water_curve(0)
+        level_5, spawn_5, speed_5 = game.irma_dark_water_curve(game.FPS * 18 * 4)
+        self.assertEqual((level_1, level_5), (1, 5))
+        self.assertLess(spawn_5, spawn_1)
+        self.assertGreater(speed_5, speed_1)
 
     def test_will_maze_is_connected_and_inside_arena(self):
         width, height, tunnel_y, walls = game.build_will_maze()
@@ -81,6 +89,26 @@ class ReleaseStaticTests(unittest.TestCase):
         self.assertFalse(late.exists())
         self.assertTrue((ROOT / "assets/audio/music/phobos_route/Phobos_main_theme_3_phase.mp3").is_file())
         self.assertTrue((ROOT / "assets/audio/collection/witch_ending.mp3").is_file())
+
+    def test_only_the_unique_uploaded_arcade_track_was_added(self):
+        tracks = sorted((ROOT / "assets/audio/minigames").glob("arcade_*.mp3"))
+        self.assertEqual([path.name for path in tracks], [f"arcade_{i}.mp3" for i in range(1, 7)])
+        digest = hashlib.sha256((ROOT / "assets/audio/minigames/arcade_6.mp3").read_bytes()).hexdigest()
+        self.assertEqual(digest, "bc9150ccb26359b0a70fbe0968d4a869a5a90d1e4c5dda198a929ba0f1e8e114")
+        self.assertTrue((ROOT / "GAME_WATCH_MINIGAMES_GUIDE_RU.md").is_file())
+
+    def test_menu_music_and_game_over_voice_quarantine(self):
+        menu_tracks = sorted((ROOT / "assets/audio/music/menu").glob("menu_*.mp3"))
+        self.assertEqual([path.name for path in menu_tracks], ["menu_1.mp3", "menu_2.mp3"])
+        self.assertEqual(
+            [hashlib.sha256(path.read_bytes()).hexdigest() for path in menu_tracks],
+            [
+                "5da2862a7614f511d1d86caa0fe7f51425b8e6100f293f64ad8dae3906ff60c3",
+                "ccc222a5053943d6a1e13c5f6e1c87539e51ec72f98992aacd7bd9944ea39f6b",
+            ],
+        )
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertNotIn('self.voice_paths.get("failed_last_time")', source)
 
 
 if __name__ == "__main__":
